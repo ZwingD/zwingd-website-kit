@@ -1,0 +1,53 @@
+{
+  "name": "@zwingd-ce/website-kit",
+  "version": "0.1.0",
+  "description": "Framework-free core of the Zwingd website kit: member sign-in through the workspace's app (session hand-over v1). No runtime dependency.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "fixtures",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "node --test --experimental-strip-types --conditions=development 'test/**/*.test.ts'",
+    "type-check": "tsc --noEmit",
+    "prepublishOnly": "pnpm build && pnpm test && pnpm type-check"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.5.0"
+  },
+  "keywords": [
+    "zwingd",
+    "session",
+    "sign-in",
+    "website",
+    "pkce"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZwingD/zwingd-website-kit.git",
+    "directory": "packages/core"
+  },
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

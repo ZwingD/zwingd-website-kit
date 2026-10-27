@@ -1,0 +1,35 @@
+name: Release
+
+# As ZwingD/cms-revalidate-nextjs: push a git tag matching v*.*.* and every
+# package whose version is not yet on npm is published, gated on type-check,
+# tests and build. Needs the NPM_PUBLISH_TOKEN repository secret (the operator's).
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          registry-url: 'https://registry.npmjs.org'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r type-check
+      - run: pnpm -r test
+      - run: pnpm -r build
+      # `workspace:^` becomes the core's real version range when published.
+      - run: pnpm -r publish --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}
