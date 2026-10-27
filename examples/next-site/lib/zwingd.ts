@@ -11,7 +11,12 @@ let checkout: MemberCheckout | null = null;
 export function zwingd(): WebsiteKit {
   if (!kit) {
     kit = createWebsiteKit(
-      configFromEnv(process.env, { insecureLocalCookies: process.env.ZWINGD_INSECURE_LOCAL_COOKIES === "true" }),
+      configFromEnv(process.env, {
+        insecureLocalCookies: process.env.ZWINGD_INSECURE_LOCAL_COOKIES === "true",
+        // kit #11: the app's page for one course by code, if the workspace's app has one
+        // (SCPMI: /communities/courses/:code). Without it, course links open /communities/learning.
+        ...(process.env.ZWINGD_COURSE_PATH ? { coursePath: process.env.ZWINGD_COURSE_PATH } : {}),
+      }),
     );
   }
   return kit;

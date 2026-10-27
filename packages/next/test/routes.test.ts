@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 
 import { createWebsiteKit } from "@zwingd-ce/website-kit";
 
-import { createSessionRoutes } from "../src/routes.ts";
+import { createSessionRoutes, signOutReturn } from "../src/routes.ts";
 
 const ORIGIN = "https://www.example.org";
 const APP = "https://app.example.org";
@@ -28,7 +28,7 @@ function setup() {
     return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
   }) as typeof fetch;
   const kit = createWebsiteKit({ apiUrl: "https://api.example.com", appUrl: APP, realm: "acme", clientSecret: "zsh_" + "c".repeat(64), origin: ORIGIN, fetch: fetchImpl });
-  return { calls, routes: createSessionRoutes(kit) };
+  return { calls, kit, routes: createSessionRoutes(kit) };
 }
 
 const jarFrom = (res: Response, jar: Map<string, string>) => {
@@ -97,9 +97,57 @@ test("GET /session/me answers JSON with no-store, and refuses a cross-site read"
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("cache-control"), "no-store");
   assert.match(res.headers.get("content-type")!, /^application\/json/);
-  assert.deepEqual(await res.json(), { member: null, signOutToken: null });
+  assert.deepEqual(await res.json(), { member: null, signOutToken: null, accountUrl: null });
 
   const cross = await routes.GET(new Request(`${ORIGIN}/session/me`, { headers: { "sec-fetch-site": "cross-site" } }));
   assert.equal(cross.status, 403);
   assert.equal(await cross.text(), "");
 });
+
+test("kit #10: sign-out from a course page; the app returns to /, and middleware sends the member back to the course", async () => {
+  const { kit, routes } = setup();
+  const jar = new Map<string, string>();
+  const start = await routes.GET(new Request(`${ORIGIN}/session/start`));
+  jarFrom(start, jar);
+  const state = new URL(start.headers.get("location")!).searchParams.get("state")!;
+  jarFrom(await routes.GET(new Request(`${ORIGIN}/session/callback?code=${CODE}&state=${encodeURIComponent(state)}`, { headers: { cookie: cookieHeader(jar) } })), jar);
+  const csrf = jar.get("__Host-zw_csrf")!;
+  const end = await routes.POST(
+    new Request(`${ORIGIN}/session/end`, {
+      method: "POST",
+      headers: { cookie: cookieHeader(jar), origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf, next: "/courses/afscm?x=1" }).toString(),
+    }),
+  );
+  assert.match(end.headers.get("location")!, /^https:\/\/app\.example\.org\/session\/sign-out/);
+  jarFrom(end, jar);
+
+  // Any page but / is left alone.
+  assert.equal(signOutReturn(kit, new Request(`${ORIGIN}/about`, { headers: { cookie: cookieHeader(jar) } })), undefined);
+  const back = signOutReturn(kit, new Request(`${ORIGIN}/`, { headers: { cookie: cookieHeader(jar) } }))!;
+  assert.equal(back.status, 303);
+  assert.equal(back.headers.get("location"), "/courses/afscm?x=1");
+  jarFrom(back, jar);
+  // Once only.
+  assert.equal(signOutReturn(kit, new Request(`${ORIGIN}/`, { headers: { cookie: cookieHeader(jar) } })), undefined);
+});
+
+for (const unsafe of ["//evil.example", "https://x", "/\\evil", "/%0a/evil"]) {
+  test(`kit #10: an unsafe next ${JSON.stringify(unsafe)} leaves the member on /`, async () => {
+    const { kit, routes } = setup();
+    const jar = new Map<string, string>();
+    const start = await routes.GET(new Request(`${ORIGIN}/session/start`));
+    jarFrom(start, jar);
+    const state = new URL(start.headers.get("location")!).searchParams.get("state")!;
+    jarFrom(await routes.GET(new Request(`${ORIGIN}/session/callback?code=${CODE}&state=${encodeURIComponent(state)}`, { headers: { cookie: cookieHeader(jar) } })), jar);
+    const end = await routes.POST(
+      new Request(`${ORIGIN}/session/end`, {
+        method: "POST",
+        headers: { cookie: cookieHeader(jar), origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+        body: `csrf=${jar.get("__Host-zw_csrf")}&next=${unsafe}`,
+      }),
+    );
+    jarFrom(end, jar);
+    assert.equal(signOutReturn(kit, new Request(`${ORIGIN}/`, { headers: { cookie: cookieHeader(jar) } })), undefined);
+  });
+}

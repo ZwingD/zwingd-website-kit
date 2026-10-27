@@ -4,6 +4,13 @@
 
 Nothing yet.
 
+## 0.1.2
+
+- Sign-out comes back to the page the member was on (#10). `POST /session/end` takes the page as the form field `next`, checks it with the saved-path rule (the same one `/session/start` uses; anything unsafe is `/`), and keeps it for 10 minutes in a new cookie (`__Host-zw_return`, `SameSite=Lax`). The app's sign-out still returns the browser to `<origin>/`; from there the kit sends it on and drops the cookie. `AccountButton`'s sign-out form sends the current page. Express and Node http do this through `createSessionHandler`; a Next.js site adds `signOutReturn` in `proxy.ts` (Next 16) or `middleware.ts` (Next 15) for `/`.
+- "Go to my account" opens the workspace's own landing path (#11). The kit reads `signInOptions.landingPath` from identity's public read on `ZWINGD_API_URL` (realm header, no token), on the server, cached about 5 minutes. Any failure, an unsafe value or no value is `/`. The setting `accountPath`, or the `AccountButton` prop of that name, overrides it. Server mode passes `accountUrl={await accountUrl(kit)}` to `MemberProvider`; in client mode `/session/me` answers `accountUrl`.
+- Course links for the owned-course panel (#11): `kit.courseUrl(code)`, `useCourseUrl()` and `courseUrlFor(appUrl, code, coursePath)`. With the setting `coursePath` (`:code` in it, e.g. SCPMI's `/communities/courses/:code`), the link opens that course. Without it, the link opens the member's learning page, `/communities/learning`.
+- `/session/me` answers `accountUrl` beside `member` and `signOutToken`: the address while signed in, `null` otherwise.
+
 ## 0.1.1
 
 The first published release: v0.1.0 was tagged but its release run failed before publishing, so nothing was ever on npm at 0.1.0. 0.1.1 carries everything listed under 0.1.0 and the following.

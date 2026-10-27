@@ -51,8 +51,8 @@ The example site also reads `ZWINGD_COUNTRY_IDS`. That variable is the example's
 |---|---|
 | `GET /session/start?next=<path>` | "Log in". Sends the browser to the app's hand-over, always with `prompt=login`. The kit never runs a silent check, and a page view never starts one |
 | `GET /session/callback` | The app sends the browser back here. The code is exchanged once, server to server, and the site's session cookie is set. It renders nothing |
-| `POST /session/end` | "Sign out". A same-site form POST only; the website and the app both sign out |
-| `GET /session/me` | Who is signed in, by name only, for pages that read the member in the browser (client mode) |
+| `POST /session/end` | "Sign out". A same-site form POST only; the website and the app both sign out. The form's `next` (the page it was on) brings the member back there afterwards: see "Back to the page after sign-out" |
+| `GET /session/me` | Who is signed in, by name only, and where "Go to my account" opens, for pages that read the member in the browser (client mode) |
 | `POST /session/checkout` | Member checkout: the member's "Buy now" (section 7). Served when you pass a checkout to the routes |
 
 ## 5. Next.js (App Router)
@@ -69,6 +69,17 @@ The example site also reads `ZWINGD_COUNTRY_IDS`. That variable is the example's
    export function POST(request: Request) { return createSessionRoutes(zwingd(), { checkout: memberCheckout() }).POST(request); }
    ```
 3. **The header** (`app/layout.tsx`): see "Server mode or client mode" below.
+4. **`proxy.ts`** (Next 16; on Next 15 name it `middleware.ts` and export `middleware`) brings a member back to the page they signed out from:
+   ```ts
+   import { signOutReturn } from "@zwingd-ce/website-kit-next";
+   import { zwingd } from "@/lib/zwingd";
+   export function proxy(request: Request) { return signOutReturn(zwingd(), request); }
+   export const config = { matcher: "/" };
+   ```
+
+### Back to the page after sign-out
+
+The app's sign-out always returns the browser to your site's `/`. So `POST /session/end` keeps the page the form named as `next` (the saved-path rule, as for `/session/start`: anything unsafe is `/`) in a 10-minute cookie, and `signOutReturn` on `/` sends the member on to it, once. `AccountButton` sends the current page. A form of your own adds `<input type="hidden" name="next" value="/the/page">`. Without `next`, the member stays on `/` as before.
 
 ### Server mode or client mode
 
@@ -76,12 +87,12 @@ The example site also reads `ZWINGD_COUNTRY_IDS`. That variable is the example's
 
 ```tsx
 import { AccountButton, MemberProvider } from "@zwingd-ce/website-kit-next/client";
-import { getMember, signOutToken } from "@zwingd-ce/website-kit-next/server";
+import { accountUrl, getMember, signOutToken } from "@zwingd-ce/website-kit-next/server";
 
 const kit = zwingd();
-const [member, csrf] = await Promise.all([getMember(kit), signOutToken(kit)]);
+const [member, csrf, account] = await Promise.all([getMember(kit), signOutToken(kit), accountUrl(kit)]);
 
-<MemberProvider member={member} signOutToken={csrf} appUrl={kit.config.appUrl}>
+<MemberProvider member={member} signOutToken={csrf} appUrl={kit.config.appUrl} accountUrl={account} coursePath={kit.config.coursePath}>
   <header>… <AccountButton className="…" /></header>
 </MemberProvider>
 ```
@@ -89,7 +100,7 @@ const [member, csrf] = await Promise.all([getMember(kit), signOutToken(kit)]);
 **Client mode** suits cached or static pages. A page that is cached for everyone must not carry one member's name, so the browser reads `GET /session/me` once after the page loads instead:
 
 ```tsx
-<MemberProvider mode="client" appUrl={process.env.ZWINGD_APP_URL!}>
+<MemberProvider mode="client" appUrl={process.env.ZWINGD_APP_URL!} coursePath="/communities/courses/:code">
   <header>… <AccountButton className="…" /></header>
 </MemberProvider>
 ```
@@ -97,7 +108,7 @@ const [member, csrf] = await Promise.all([getMember(kit), signOutToken(kit)]);
 - Until the answer arrives, the button draws an empty placeholder, so "Log in" never flashes for a member.
 - The read gives up after about 5 seconds and shows "Log in", so a slow API never leaves the header empty. It asks again only on the visitor's next focus or click on the button, never on a timer.
 - When that retry turns a focused "Log in" into "My account", focus moves to "My account".
-- `/session/me` answers `{ member: { firstName?, lastName? } | null, signOutToken }` with `Cache-Control: no-store`, to same-origin requests only.
+- `/session/me` answers `{ member: { firstName?, lastName? } | null, signOutToken, accountUrl }` with `Cache-Control: no-store`, to same-origin requests only. `accountUrl` is set while signed in.
 
 ### AccountButton
 
@@ -114,6 +125,20 @@ const [member, csrf] = await Promise.all([getMember(kit), signOutToken(kit)]);
 | `signOutFormClassName` | The sign-out `<form>` |
 | `signOutClassName` | The "Sign out" button |
 
+Two more props: `next` (the page to come back to after logging in or signing out; default: this page) and `accountPath` (see below).
+
+### Where "Go to my account" and course links open
+
+"Go to my account" is a plain link into the app, `<ZWINGD_APP_URL><path>`. The member is signed in to the app already. The path is, in order:
+
+1. the `accountPath` prop of `AccountButton`, or the kit setting `accountPath` (`configFromEnv(process.env, { accountPath: "/communities/learning" })`);
+2. else the **workspace's own landing path**, the one its app opens after sign-in. The kit reads it on your server from the API's public sign-in options, about every 5 minutes;
+3. else `/`, the app's home. This includes when the read fails.
+
+A path that is not a same-origin path is refused: the setting at start-up, the prop by being ignored.
+
+For "You already have this course", link to that course with `useCourseUrl()(code)` in a Client Component, or `kit.courseUrl(code)` on the server. `courseUrlFor(appUrl, code, coursePath)` works anywhere. Give the kit the app's page for one course as the setting `coursePath`, with `:code` in it (SCPMI's app: `/communities/courses/:code`), and pass it to `MemberProvider` as `coursePath`. Without it, or for a code that is not a course code, the link opens the member's learning page, `/communities/learning`.
+
 ## 6. Express and Node http
 
 ```ts
@@ -126,6 +151,7 @@ const checkout = createMemberCheckout(kit, { visitorCountry: (req) => countryIdF
 const app = express();
 
 // Serves the five routes in section 4. Without { checkout }, POST /session/checkout is left to your site.
+// Mounted for every path, it also brings a member back from the app's sign-out (which lands on /).
 app.use(createSessionHandler(kit, { checkout }));
 
 app.get("/", async (req, res) => {
@@ -133,7 +159,9 @@ app.get("/", async (req, res) => {
   if (check.status === "signed-in") {
     const csrf = signOutFormToken(kit, req, res);
     // "My account" plus a sign-out form:
-    // <form method="post" action="/session/end"><input type="hidden" name="csrf" value="${csrf}"><button>Sign out</button></form>
+    // <form method="post" action="/session/end"><input type="hidden" name="csrf" value="${csrf}">
+    //   <input type="hidden" name="next" value="${req.path}"><button>Sign out</button></form>
+    // "Go to my account": <a href="${await kit.accountUrl()}">
   } else {
     // "Log in" links to /session/start?next=/
   }

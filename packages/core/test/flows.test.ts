@@ -248,7 +248,7 @@ test("me: signed in answers the name only and the sign-out value, no-store, Vary
   assert.equal(res?.headers["Cache-Control"], "no-store");
   assert.equal(res?.headers.Vary, "Cookie");
   assert.match(res!.headers["Content-Type"]!, /^application\/json/);
-  assert.deepEqual(JSON.parse(res!.body!), { member: { firstName: "Asha", lastName: "Rao" }, signOutToken: csrf });
+  assert.deepEqual(JSON.parse(res!.body!), { member: { firstName: "Asha", lastName: "Rao" }, signOutToken: csrf, accountUrl: `${APP}/` });
   assert.equal(res!.body!.includes("asha@example.org"), false);
   assert.deepEqual(res?.setCookies, []);
 });
@@ -265,14 +265,14 @@ test("me: a signed-in browser with no CSRF cookie gets one minted and set", asyn
 test("me: signed out answers null and never calls the API", async () => {
   const { kit, api } = kitWith({});
   const res = await kit.me(req({ url: `${ORIGIN}/session/me` }));
-  assert.deepEqual(JSON.parse(res.body!), { member: null, signOutToken: null });
+  assert.deepEqual(JSON.parse(res.body!), { member: null, signOutToken: null, accountUrl: null });
   assert.equal(api.calls.length, 0);
 });
 
 test("me: active false answers null and clears the session cookie", async () => {
   const { kit } = kitWith({ session: { status: 200, body: { active: false } } });
   const res = await kit.me(req({ url: `${ORIGIN}/session/me`, cookies: signedInCookies("c".repeat(43)) }));
-  assert.deepEqual(JSON.parse(res.body!), { member: null, signOutToken: null });
+  assert.deepEqual(JSON.parse(res.body!), { member: null, signOutToken: null, accountUrl: null });
   assert.match(cookieNamed(res.setCookies, "__Host-zw_session")!, /Max-Age=0/);
   assert.match(cookieNamed(res.setCookies, "__Host-zw_csrf")!, /Max-Age=0/);
 });
@@ -287,7 +287,7 @@ test("me: a 503 keeps the member signed in, with no name yet", async () => {
 test("me: the check is cached, so a second read within 60 s calls the API once", async () => {
   const { kit, api } = kitWith({ session: ACTIVE });
   for (let i = 0; i < 2; i += 1) await kit.me(req({ url: `${ORIGIN}/session/me`, cookies: signedInCookies("c".repeat(43)) }));
-  assert.equal(api.calls.length, 1);
+  assert.equal(api.calls.filter((c) => c.url.endsWith("/session")).length, 1);
 });
 
 for (const [label, headers] of [

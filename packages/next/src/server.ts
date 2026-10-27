@@ -5,6 +5,7 @@
  *
  *   const member = await getMember(kit);          // { firstName?, lastName? } or null
  *   const signOut = await signOutToken(kit);      // the sign-out form's csrf value
+ *   const account = await accountUrl(kit);        // where "Go to my account" opens
  */
 import { cookies } from "next/headers";
 
@@ -76,4 +77,13 @@ export async function getMemberQuote(
   options: { visitorCountry?: string | null; couponCode?: string } = {}
 ): Promise<MemberQuoteCheck> {
   return checkout.getMemberQuote(await cookieMap(), offer, options);
+}
+
+/**
+ * kit #11: where "Go to my account" opens: the kit's `accountPath`, else the
+ * workspace's own landing path (read publicly, cached about 5 minutes), else
+ * the app's home. Never throws.
+ */
+export async function accountUrl(kit: WebsiteKit): Promise<string> {
+  return kit.accountUrl();
 }

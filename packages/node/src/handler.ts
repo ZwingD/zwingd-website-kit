@@ -1,5 +1,7 @@
 /**
  * The website kit on a plain Node `(req, res)` server, Express included.
+ * Mounted for every path, it also sends a member back from the app's sign-out
+ * (which lands on `/`) to the page they signed out from (kit #10).
  *
  *   app.use(createSessionHandler(kit));          // Express: serves /session/*, else next()
  *   http.createServer((req, res) => handler(req, res, () => { ...the site... }));
@@ -93,6 +95,16 @@ export interface SessionHandlerOptions {
 export function createSessionHandler(kit: WebsiteKit, options: SessionHandlerOptions = {}) {
   return async function sessionHandler(req: IncomingMessage, res: ServerResponse, next?: Next): Promise<void> {
     const path = new URL(req.url ?? "/", kit.config.origin).pathname;
+    // kit #10: the app's sign-out returns to `/`; send the member on to the page they signed out from.
+    if (path === "/") {
+      const back = kit.signOutReturn({
+        method: (req.method ?? "GET").toUpperCase(),
+        url: new URL(req.url ?? "/", kit.config.origin).href,
+        cookies: parseCookieHeader(req.headers.cookie),
+        headers: {},
+      });
+      if (back) return writeResponse(res, back);
+    }
     if (!path.startsWith(SESSION_PREFIX)) {
       if (next) return next();
       res.statusCode = 404;
