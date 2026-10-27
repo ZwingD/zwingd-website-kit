@@ -37,7 +37,7 @@ test("a hung read answers signed out after the timeout, and the request is abort
   const reader = createSessionMeReader({ fetch: api.fetch, timeoutMs: 20 });
   const started = Date.now();
   const result = await reader.read();
-  assert.deepEqual(result, { member: null, signOutToken: null, retryable: true });
+  assert.deepEqual(result, { member: null, signOutToken: null, accountUrl: null, retryable: true });
   assert.ok(Date.now() - started < 1_000);
   assert.equal(api.calls[0]!.signal?.aborted, true);
 });
@@ -55,7 +55,7 @@ test("the next user action retries once, and can turn the header into My account
   const reader = createSessionMeReader({ fetch: api.fetch, timeoutMs: 20 });
   await reader.read();
   const retried = await reader.retry();
-  assert.deepEqual(retried, { member: { firstName: "Asha" }, signOutToken: MEMBER.signOutToken, retryable: false });
+  assert.deepEqual(retried, { member: { firstName: "Asha" }, signOutToken: MEMBER.signOutToken, accountUrl: null, retryable: false });
   assert.equal(api.calls.length, 2);
   // Not retryable any more: a later action asks nothing.
   assert.equal(await reader.retry(), null);
@@ -75,8 +75,8 @@ test("actions during a read in flight share it; a second action never stacks a r
 test("a network fault or a non-200 is signed out and retryable; a real signed-out answer is not", async () => {
   for (const reply of ["network", { status: 500 }, { status: 403 }] as Reply[]) {
     const result = await createSessionMeReader({ fetch: fakeFetch([reply]).fetch, timeoutMs: 20 }).read();
-    assert.deepEqual(result, { member: null, signOutToken: null, retryable: true });
+    assert.deepEqual(result, { member: null, signOutToken: null, accountUrl: null, retryable: true });
   }
   const signedOut = await createSessionMeReader({ fetch: fakeFetch([{ status: 200, body: { member: null, signOutToken: null } }]).fetch }).read();
-  assert.deepEqual(signedOut, { member: null, signOutToken: null, retryable: false });
+  assert.deepEqual(signedOut, { member: null, signOutToken: null, accountUrl: null, retryable: false });
 });

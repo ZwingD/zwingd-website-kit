@@ -6,6 +6,7 @@ import { headers } from "next/headers";
 import { getMemberQuote, signOutToken } from "@zwingd-ce/website-kit-next/server";
 
 import { BuyNow } from "@/components/buy-now";
+import { OwnedCourse } from "@/components/owned-course";
 import { countryIdFor, memberCheckout, zwingd } from "@/lib/zwingd";
 
 export const dynamic = "force-dynamic";
@@ -15,8 +16,17 @@ function price(minor: string, exponent: number, currency: string): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(major);
 }
 
-export default async function CoursePage({ params }: { params: Promise<{ offer: string }> }) {
+export default async function CoursePage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ offer: string }>;
+  searchParams: Promise<{ course?: string }>;
+}) {
   const { offer } = await params;
+  // The site knows which course each of its pages sells; the example takes it from ?course=.
+  const { course } = await searchParams;
+  const courseCode = typeof course === "string" ? course : null;
   const country = countryIdFor((await headers()).get("x-vercel-ip-country"));
   const [quoted, csrf] = await Promise.all([getMemberQuote(memberCheckout(), offer, { visitorCountry: country }), signOutToken(zwingd())]);
 
@@ -35,9 +45,15 @@ export default async function CoursePage({ params }: { params: Promise<{ offer: 
       <h1>Course</h1>
       <p>Your price: {price(quote.totalMinor, quote.minorUnitExponent, quote.currencyCode)}</p>
       {quote.alreadyEnrolled ? (
-        <p>You already have this course.</p>
+        <OwnedCourse courseCode={courseCode} message="You already have this course." />
       ) : (
-        <BuyNow offer={offer} csrf={csrf} expectedTotalMinor={quote.totalMinor} paymentGateway={quote.gateways[0]?.paymentGateway} />
+        <BuyNow
+          offer={offer}
+          csrf={csrf}
+          expectedTotalMinor={quote.totalMinor}
+          paymentGateway={quote.gateways[0]?.paymentGateway}
+          courseCode={courseCode}
+        />
       )}
     </section>
   );

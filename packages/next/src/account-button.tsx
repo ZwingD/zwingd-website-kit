@@ -13,11 +13,15 @@
  *   - Signed out: a link to `/session/start?next=<this page>`. Only a click
  *     starts a hand-over; a page view never does.
  *   - Signed in: "My account" opens a menu (`<details>`, works without
- *     JavaScript) with "Go to my account" (a full navigation to the app) and
- *     "Sign out" (a form POST to `/session/end` carrying the csrf value).
+ *     JavaScript) with "Go to my account" (a full navigation to the app: the
+ *     `accountPath` prop, else the provider's `accountUrl` - the workspace's
+ *     landing path - else the app's home; kit #11) and "Sign out" (a form POST
+ *     to `/session/end` carrying the csrf value and this page as `next`, so the
+ *     member comes back here; kit #10).
  */
 import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
+import { savedPath } from "@zwingd-ce/website-kit";
 
 import { useMemberState } from "./member-provider.tsx";
 
@@ -37,8 +41,10 @@ export const DEFAULT_ACCOUNT_LABELS: AccountButtonLabels = {
 
 export interface AccountButtonProps {
   labels?: Partial<AccountButtonLabels>;
-  /** Where to come back to after logging in; default: the current page. */
+  /** Where to come back to after logging in or signing out; default: the current page. */
   next?: string;
+  /** "Go to my account" opens this path in the app, over the workspace's landing path (kit #11). An unsafe path is ignored. */
+  accountPath?: string;
   /** The root of each state: the `<details>` when signed in; also the Log in link and the placeholder unless they have their own. */
   className?: string;
   /** The empty placeholder while client mode waits for /session/me. */
@@ -58,7 +64,7 @@ export interface AccountButtonProps {
 }
 
 export function AccountButton(props: AccountButtonProps) {
-  const { member, signOutToken, appUrl, loading, retry } = useMemberState();
+  const { member, signOutToken, appUrl, accountUrl, loading, retry } = useMemberState();
   // The path only: useSearchParams would force a Suspense boundary around every
   // header. A page that needs its query back passes `next`.
   const pathname = usePathname();
@@ -92,18 +98,24 @@ export function AccountButton(props: AccountButtonProps) {
     );
   }
 
+  const next = savedPath(props.next ?? pathname ?? "/");
+  const overridePath = props.accountPath === undefined ? null : savedPath(props.accountPath);
+  const accountHref =
+    overridePath !== null && overridePath === props.accountPath ? `${appUrl}${overridePath}` : (accountUrl ?? `${appUrl}/`);
+
   return (
     <details className={props.className}>
       <summary ref={trigger} className={props.triggerClassName}>
         {labels.myAccount}
       </summary>
       <div className={props.menuClassName}>
-        <a className={props.itemClassName} href={`${appUrl}/`}>
+        <a className={props.itemClassName} href={accountHref}>
           {labels.goToMyAccount}
         </a>
         {signOutToken ? (
           <form className={props.signOutFormClassName} method="post" action="/session/end">
             <input type="hidden" name="csrf" value={signOutToken} />
+            {next !== "/" ? <input type="hidden" name="next" value={next} /> : null}
             <button className={props.signOutClassName ?? props.itemClassName} type="submit">
               {labels.signOut}
             </button>

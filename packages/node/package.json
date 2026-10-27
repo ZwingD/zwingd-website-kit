@@ -1,6 +1,6 @@
 {
   "name": "@zwingd-ce/website-kit-node",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Node http / Express adapter of the Zwingd website kit: the three /session/* routes and getMember for a plain (req, res) server.",
   "type": "module",
   "main": "./dist/index.cjs",

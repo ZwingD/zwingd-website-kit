@@ -2,7 +2,9 @@
  * The website's cookies (session hand-over v1, "Cookies"):
  *   - start:   `state`, the PKCE verifier and the saved path; 10 minutes;
  *   - session: the session token; until `expiresAt`;
- *   - csrf:    the sign-out form's value, `SameSite=Strict`, set with the session.
+ *   - csrf:    the sign-out form's value, `SameSite=Strict`, set with the session;
+ *   - return:  the page a sign-out started on, kept while the app signs the
+ *              member out (the app always returns to `<origin>/`); 10 minutes.
  * All `__Host-` names, `HttpOnly`, `Secure`, `Path=/`. A removing `Set-Cookie`
  * carries `Secure` and `Path=/` too, or the browser ignores it and the cookie
  * stays. `insecureLocalCookies` (local `http://localhost` only) drops the
@@ -13,21 +15,25 @@ export interface CookieNames {
   start: string;
   session: string;
   csrf: string;
+  return: string;
 }
 
 export const SECURE_COOKIE_NAMES: CookieNames = Object.freeze({
   start: "__Host-zw_start",
   session: "__Host-zw_session",
   csrf: "__Host-zw_csrf",
+  return: "__Host-zw_return",
 });
 
 export const LOCAL_COOKIE_NAMES: CookieNames = Object.freeze({
   start: "zw_start",
   session: "zw_session",
   csrf: "zw_csrf",
+  return: "zw_return",
 });
 
 export const START_COOKIE_MAX_AGE_S = 600;
+export const RETURN_COOKIE_MAX_AGE_S = 600;
 
 export function cookieNames(insecureLocalCookies: boolean): CookieNames {
   return insecureLocalCookies ? LOCAL_COOKIE_NAMES : SECURE_COOKIE_NAMES;

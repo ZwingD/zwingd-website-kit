@@ -11,16 +11,28 @@ import type { SiteMember } from "./server.ts";
 
 export const SESSION_ME_PATH = "/session/me";
 
-export function readSessionMe(data: unknown): { member: SiteMember | null; signOutToken: string | null } {
-  const body = (data && typeof data === "object" ? data : {}) as { member?: unknown; signOutToken?: unknown };
+/** An absolute http(s) address, else null (kit #11's `accountUrl`; anything else falls back to the app's home). */
+function httpUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+export function readSessionMe(data: unknown): { member: SiteMember | null; signOutToken: string | null; accountUrl: string | null } {
+  const body = (data && typeof data === "object" ? data : {}) as { member?: unknown; signOutToken?: unknown; accountUrl?: unknown };
   const m = body.member && typeof body.member === "object" ? (body.member as Record<string, unknown>) : null;
-  if (!m) return { member: null, signOutToken: null };
+  if (!m) return { member: null, signOutToken: null, accountUrl: null };
   return {
     member: {
       ...(typeof m.firstName === "string" ? { firstName: m.firstName } : {}),
       ...(typeof m.lastName === "string" ? { lastName: m.lastName } : {}),
     },
     signOutToken: typeof body.signOutToken === "string" ? body.signOutToken : null,
+    accountUrl: httpUrl(body.accountUrl),
   };
 }
 
@@ -30,6 +42,8 @@ export const SESSION_ME_TIMEOUT_MS = 5_000;
 export interface SessionMeRead {
   member: SiteMember | null;
   signOutToken: string | null;
+  /** Where "Go to my account" opens, from /session/me (kit #11); null when it did not say. */
+  accountUrl: string | null;
   /** True when the read did not get a real answer (a timeout, a fault): the next user action may ask again. */
   retryable: boolean;
 }
@@ -41,7 +55,7 @@ export interface SessionMeReader {
   retry(): Promise<SessionMeRead> | null;
 }
 
-const SIGNED_OUT_RETRYABLE: SessionMeRead = { member: null, signOutToken: null, retryable: true };
+const SIGNED_OUT_RETRYABLE: SessionMeRead = { member: null, signOutToken: null, accountUrl: null, retryable: true };
 
 export function createSessionMeReader(options: { fetch?: typeof fetch; timeoutMs?: number } = {}): SessionMeReader {
   const timeoutMs = options.timeoutMs ?? SESSION_ME_TIMEOUT_MS;

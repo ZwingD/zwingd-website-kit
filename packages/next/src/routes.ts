@@ -75,3 +75,26 @@ export function createSessionRoutes(kit: WebsiteKit, options: SessionRoutesOptio
   }
   return { GET: handler, POST: handler };
 }
+
+/**
+ * kit #10, for `middleware.ts`: the app's sign-out always returns the browser to
+ * `<origin>/`; this sends it on to the page the sign-out started from (kept by
+ * POST /session/end under the saved-path rule) and drops the cookie. Undefined
+ * for every other request, so the page is served as usual.
+ *
+ *   // middleware.ts
+ *   import { signOutReturn } from "@zwingd-ce/website-kit-next";
+ *   import { zwingd } from "@/lib/zwingd";
+ *   export function middleware(request: Request) { return signOutReturn(zwingd(), request); }
+ *   export const config = { matcher: "/" };
+ */
+export function signOutReturn(kit: WebsiteKit, request: Request): Response | undefined {
+  if (request.method !== "GET" && request.method !== "HEAD") return undefined;
+  const view = kit.signOutReturn({
+    method: request.method.toUpperCase(),
+    url: request.url,
+    cookies: parseCookieHeader(request.headers.get("cookie")),
+    headers: {},
+  });
+  return view ? toResponse(view) : undefined;
+}

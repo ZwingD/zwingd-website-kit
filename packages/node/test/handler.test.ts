@@ -132,3 +132,30 @@ test("a path outside /session/ goes to the site; an unknown /session/ path is th
     await close();
   }
 });
+
+test("kit #10: Express sends a member back from the app's sign-out (which lands on /) to the page they signed out from", async () => {
+  const { base, close } = await serve();
+  try {
+    const jar = new Map<string, string>();
+    const start = await fetch(`${base}/session/start`, { redirect: "manual" });
+    absorb(start, jar);
+    const state = new URL(start.headers.get("location")!).searchParams.get("state")!;
+    absorb(await fetch(`${base}/session/callback?code=${CODE}&state=${encodeURIComponent(state)}`, { redirect: "manual", headers: { cookie: cookieHeader(jar) } }), jar);
+    const end = await fetch(`${base}/session/end`, {
+      method: "POST",
+      redirect: "manual",
+      headers: { cookie: cookieHeader(jar), origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf: jar.get("zw_csrf")!, next: "/courses/x" }).toString(),
+    });
+    assert.equal(end.status, 303);
+    absorb(end, jar);
+    const home = await fetch(`${base}/`, { redirect: "manual", headers: { cookie: cookieHeader(jar) } });
+    assert.equal(home.status, 303);
+    assert.equal(home.headers.get("location"), "/courses/x");
+    absorb(home, jar);
+    // The next visit to / is the page itself.
+    assert.equal((await fetch(`${base}/`, { redirect: "manual", headers: { cookie: cookieHeader(jar) } })).status, 200);
+  } finally {
+    await close();
+  }
+});

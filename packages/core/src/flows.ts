@@ -8,7 +8,10 @@
  *                           exchange, 303 to the saved path. Renders nothing.
  *   POST /session/end       same-site POST only; ends the session on the API,
  *                           clears the cookies whatever the answer, 303 to the
- *                           app's sign-out.
+ *                           app's sign-out. The form's `next` (the page it was
+ *                           on, under the saved-path rule) is kept in a
+ *                           10-minute cookie: the app returns the browser to
+ *                           `<origin>/`, where `signOutReturn` sends it on.
  *   GET  /session/me        same-origin only; who is signed in, by name, as
  *                           JSON, through the 60 s check cache. For pages
  *                           that are cached or static and read the member in
@@ -19,11 +22,13 @@
  * put in a URL other than the contract's own redirects.
  */
 import { endSession, exchangeCode, isSessionToken } from "./api-client.ts";
+import { createAccountLinks } from "./account.ts";
 import { resolveConfig, type WebsiteKitConfig, type WebsiteKitConfigInput } from "./config.ts";
 import {
   clearCookie,
   cookieNames,
   type CookieNames,
+  RETURN_COOKIE_MAX_AGE_S,
   serializeCookie,
   START_COOKIE_MAX_AGE_S,
 } from "./cookies.ts";
@@ -65,7 +70,12 @@ export interface SessionMe {
   member: { firstName?: string; lastName?: string } | null;
   /** The sign-out form's `csrf` value while signed in, else null. */
   signOutToken: string | null;
+  /** While signed in: where "Go to my account" opens (`<ZWINGD_APP_URL><path>`, kit #11); else null. */
+  accountUrl: string | null;
 }
+
+/** The sign-out form's field for the page it was on (kit #10). */
+export const SIGN_OUT_NEXT_FIELD = "next";
 
 const CODE = /^[0-9a-f]{64}$/;
 
@@ -84,6 +94,22 @@ interface StartState {
 
 function encodeStart(start: StartState): string {
   return base64url(new TextEncoder().encode(JSON.stringify({ s: start.state, v: start.verifier, p: start.path })));
+}
+
+function encodePath(path: string): string {
+  return base64url(new TextEncoder().encode(path));
+}
+
+/** The kept path, checked again with the saved-path rule; null when unreadable. */
+function decodePath(raw: string | undefined): string | null {
+  if (!raw || !/^[A-Za-z0-9_-]{1,1024}$/.test(raw)) return null;
+  try {
+    const padded = raw.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((raw.length + 3) % 4);
+    const bytes = Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
+    return savedPath(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    return null;
+  }
 }
 
 function decodeStart(raw: string | undefined): StartState | null {
@@ -117,6 +143,16 @@ export interface WebsiteKit extends MemberReader {
   csrfFor(cookies: Record<string, string>): { token: string; setCookie: string | null };
   /** The `Set-Cookie` that drops the session, for an adapter that saw `getMember` answer `ended`. */
   clearSessionCookie(): string;
+  /**
+   * kit #10: a GET of `/` carrying the cookie a sign-out left: 303 to the page
+   * the sign-out started on (saved-path rule), dropping the cookie. Null for any
+   * other request: serve the page as usual.
+   */
+  signOutReturn(req: RequestView): ResponseView | null;
+  /** kit #11: where "Go to my account" opens. Never throws; `<appUrl>/` on any failure. */
+  accountUrl(): Promise<string>;
+  /** kit #11: the app's page for one course by code, or the learning page. */
+  courseUrl(code: string): string;
 }
 
 export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig): WebsiteKit {
@@ -124,10 +160,12 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
   const names = cookieNames(config.insecureLocalCookies);
   const local = config.insecureLocalCookies;
   const members = createMemberReader(config, names);
+  const links = createAccountLinks(config);
 
   const clearStart = () => clearCookie(names.start, "Lax", local);
   const clearSession = () => clearCookie(names.session, "Lax", local);
   const clearCsrf = () => clearCookie(names.csrf, "Strict", local);
+  const clearReturn = () => clearCookie(names.return, "Lax", local);
   const appSignOutFallback = () => `${config.appUrl}/session/sign-out?return_origin=${encodeURIComponent(config.origin)}`;
 
   async function start(req: RequestView): Promise<ResponseView> {
@@ -204,8 +242,15 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
       const url = res.ok ? res.body.appSignOutUrl : null;
       if (url && /^https?:\/\//.test(url)) location = url;
     }
+    // kit #10: the page to come back to, under the same rule as /session/start.
+    // Lax, so it rides the app's top-level navigation back to `<origin>/`.
+    const back = savedPath(req.form?.[SIGN_OUT_NEXT_FIELD]);
+    const keep =
+      back === "/"
+        ? clearReturn()
+        : serializeCookie(names.return, encodePath(back), { sameSite: "Lax", maxAge: RETURN_COOKIE_MAX_AGE_S }, local);
     // Cleared whatever the API answered: the member is never left signed in on the website.
-    return redirect(303, location, [clearSession(), clearCsrf()]);
+    return redirect(303, location, [clearSession(), clearCsrf(), keep]);
   }
 
   function csrfFor(cookies: Record<string, string>): { token: string; setCookie: string | null } {
@@ -233,7 +278,7 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
 
     const check = await members.getMember(req.cookies);
     const setCookies: string[] = [];
-    const answer: SessionMe = { member: null, signOutToken: null };
+    const answer: SessionMe = { member: null, signOutToken: null, accountUrl: null };
     if (check.status === "ended") {
       setCookies.push(clearSession(), clearCsrf());
     } else if (check.status === "signed-in") {
@@ -241,6 +286,7 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
       answer.member = { ...(m?.firstName ? { firstName: m.firstName } : {}), ...(m?.lastName ? { lastName: m.lastName } : {}) };
       const csrf = csrfFor(req.cookies);
       answer.signOutToken = csrf.token;
+      answer.accountUrl = await links.accountUrl();
       if (csrf.setCookie) setCookies.push(csrf.setCookie);
     }
     return {
@@ -249,6 +295,16 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
       setCookies,
       ...(req.method === "GET" ? { body: JSON.stringify(answer) } : {}),
     };
+  }
+
+  function signOutReturn(req: RequestView): ResponseView | null {
+    if (req.method !== "GET" && req.method !== "HEAD") return null;
+    if (new URL(req.url, config.origin).pathname !== "/") return null;
+    const raw = req.cookies[names.return];
+    if (raw === undefined) return null;
+    const back = decodePath(raw) ?? "/";
+    // Back on the page it started from. A bad value goes to `/` once more, without the cookie.
+    return redirect(303, back, [clearReturn()]);
   }
 
   return {
@@ -268,6 +324,9 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
     },
     csrfFor,
     clearSessionCookie: clearSession,
+    signOutReturn,
+    accountUrl: links.accountUrl,
+    courseUrl: links.courseUrl,
     getMember: members.getMember,
     freshMember: members.freshMember,
     remember: members.remember,

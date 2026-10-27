@@ -4,6 +4,7 @@
  * `WebsiteKitConfigError` naming the SETTING, never its value: the client
  * secret must never appear in an error, a log or a page.
  */
+import { savedPath } from "./saved-path.ts";
 
 export interface WebsiteKitConfigInput {
   /** `ZWINGD_API_URL`: the API address, e.g. `https://api.example.com`. */
@@ -27,6 +28,18 @@ export interface WebsiteKitConfigInput {
   fetch?: typeof fetch;
   /** For tests: the clock, in milliseconds. Default: `Date.now`. */
   now?: () => number;
+  /**
+   * "Go to my account": a path inside the app that overrides the workspace's own
+   * landing path (`signInOptions.landingPath`), e.g. `/communities/learning`.
+   * A same-origin path under the saved-path rule, or the setting is refused.
+   */
+  accountPath?: string | null;
+  /**
+   * The app's page for ONE course by its code, with `:code` in it, e.g.
+   * `/communities/courses/:code`. Without it a course link opens the member's
+   * learning page (`/communities/learning`).
+   */
+  coursePath?: string | null;
 }
 
 export interface WebsiteKitConfig {
@@ -39,6 +52,8 @@ export interface WebsiteKitConfig {
   timeoutMs: number;
   fetch: typeof fetch;
   now: () => number;
+  accountPath: string | null;
+  coursePath: string | null;
 }
 
 export class WebsiteKitConfigError extends Error {
@@ -85,9 +100,23 @@ function baseUrl(value: unknown, setting: string, allowLocalHttp: boolean): stri
   return url.href.replace(/\/+$/, "");
 }
 
+/** An optional in-app path setting: absent, or a path the saved-path rule keeps exactly. */
+function appPath(value: unknown, setting: string): string | null {
+  if (value === undefined || value === null) return null;
+  // savedPath answers "/" for anything unsafe, so a kept value equals its input.
+  if (typeof value !== "string" || savedPath(value) !== value) throw new WebsiteKitConfigError(setting);
+  return value;
+}
+
 function isProduction(): boolean {
   const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
   return env?.NODE_ENV === "production";
+}
+
+function coursePathOf(value: unknown): string | null {
+  const path = appPath(value, "coursePath");
+  if (path !== null && !path.includes(":code")) throw new WebsiteKitConfigError("coursePath");
+  return path;
 }
 
 /** Check and complete the settings once, at start-up. */
@@ -118,13 +147,15 @@ export function resolveConfig(input: WebsiteKitConfigInput): WebsiteKitConfig {
     timeoutMs,
     fetch: fetchImpl,
     now: input.now ?? Date.now,
+    accountPath: appPath(input.accountPath, "accountPath"),
+    coursePath: coursePathOf(input.coursePath),
   };
 }
 
 /** The settings from the standard environment names (server side only). */
 export function configFromEnv(
   env: Record<string, string | undefined>,
-  extra: Partial<Pick<WebsiteKitConfigInput, "insecureLocalCookies" | "timeoutMs" | "fetch" | "now">> = {},
+  extra: Partial<Pick<WebsiteKitConfigInput, "insecureLocalCookies" | "timeoutMs" | "fetch" | "now" | "accountPath" | "coursePath">> = {},
 ): WebsiteKitConfig {
   return resolveConfig({
     apiUrl: env.ZWINGD_API_URL ?? "",
