@@ -8,3 +8,5 @@ dist
 coverage
 .vscode
 .idea
+.next
+next-env.d.ts

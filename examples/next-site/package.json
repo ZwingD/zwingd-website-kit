@@ -1,0 +1,23 @@
+{
+  "name": "next-site",
+  "private": true,
+  "description": "Example site: member sign-in through the Zwingd app with @zwingd-ce/website-kit-next. Copy lib/zwingd.ts, app/session/[action]/route.ts and the header into your site.",
+  "scripts": {
+    "dev": "next dev -p 3100",
+    "build": "next build",
+    "start": "next start -p 3100",
+    "type-check": "tsc --noEmit",
+    "test": "node -e \"process.exit(0)\""
+  },
+  "dependencies": {
+    "@zwingd-ce/website-kit-next": "workspace:^",
+    "next": "^16.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "typescript": "^5.5.0"
+  }
+}
