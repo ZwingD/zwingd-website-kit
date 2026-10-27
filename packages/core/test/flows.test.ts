@@ -71,6 +71,8 @@ test("callback: a state mismatch, or no start cookie, refuses and never calls ex
     assert.equal(res.status, 303);
     assert.equal(res.headers.Location, "/");
     assert.equal(cookieNamed(res.setCookies, "__Host-zw_session"), undefined);
+    // An honest sign-in still in progress keeps its start cookie.
+    assert.equal(cookieNamed(res.setCookies, "__Host-zw_start"), undefined);
   }
   assert.equal(api.calls.length, 0);
 });

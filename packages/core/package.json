@@ -8,7 +8,7 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "development": "./src/index.ts",
+      "@zwingd-ce/source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
@@ -22,7 +22,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "test": "node --test --experimental-strip-types --conditions=development 'test/**/*.test.ts'",
+    "test": "node --test --experimental-strip-types --conditions=@zwingd-ce/source 'test/**/*.test.ts'",
     "type-check": "tsc --noEmit",
     "prepublishOnly": "pnpm build && pnpm test && pnpm type-check"
   },

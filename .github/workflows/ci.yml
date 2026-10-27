@@ -22,3 +22,5 @@ jobs:
       - run: pnpm -r type-check
       - run: pnpm -r test
       - run: pnpm -r build
+      # Published packages import from a clean consumer, plain and under `development`.
+      - run: bash scripts/pack-check.sh
