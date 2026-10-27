@@ -8,7 +8,7 @@
  * `@zwingd-ce/website-kit-next`); this package is what they translate.
  */
 export { createWebsiteKit, CSRF_FIELD, SESSION_PATHS } from "./flows.ts";
-export type { RequestView, ResponseView, WebsiteKit } from "./flows.ts";
+export type { RequestView, ResponseView, SessionMe, WebsiteKit } from "./flows.ts";
 export { configFromEnv, resolveConfig, WebsiteKitConfigError, DEFAULT_TIMEOUT_MS } from "./config.ts";
 export type { WebsiteKitConfig, WebsiteKitConfigInput } from "./config.ts";
 export { savedPath, SAVED_PATH_MAX } from "./saved-path.ts";
