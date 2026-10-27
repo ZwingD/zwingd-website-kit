@@ -4,6 +4,8 @@ The kit is for a workspace's own website. It recognises a member who is signed i
 
 It implements [session hand-over v1 and v1.1](https://github.com/ZwingD/zwingd-backend/blob/develop/docs/storefront-api/session-handover-v1.md). That document is the contract, and the kit follows it rule for rule. The platform's own guide for website teams is [website-kit.md](https://github.com/ZwingD/zwingd-backend/blob/develop/docs/storefront-api/website-kit.md).
 
+**New here?** Start with the [developer guide](docs/developer-guide.md): what to ask the workspace and the platform team for, member sign-in, the checkout pop-up and return page, member Buy Now, testing and troubleshooting. This README is the code reference.
+
 | Package | For |
 |---|---|
 | `@zwingd-ce/website-kit` | The core. No framework and no runtime dependency (Web Crypto and `fetch` only). Runs on Node 18.17+ and edge runtimes |

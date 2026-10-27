@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-Nothing yet.
+- Docs: a developer guide for website teams, `docs/developer-guide.md` (ZwingD/zwingd-backend#1884): what to ask the workspace admin and the platform team for, server settings, member sign-in, the guest checkout pop-up and return page, member Buy Now, testing, going live and troubleshooting. The README links to it.
 
 ## 0.1.2
 
