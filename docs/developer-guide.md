@@ -174,7 +174,7 @@ A member signed in on your website buys with one click. A visitor who is not sig
 
 1. **On the server, make the checkout once:** `createMemberCheckout(kit, { visitorCountry })`. `visitorCountry` maps your host's geo header to the workspace's country id, or answers null. It prices only a member whose profile has no country. The example site maps the geo header through `ZWINGD_COUNTRY_IDS`; ask the workspace admin or the platform team for the country ids.
 2. **Serve the route:** pass `{ checkout }` to `createSessionRoutes` (Next.js) or `createSessionHandler` (Node).
-3. **Show the member's own price:** on the course page, on the server, call `getMemberQuote`. Show its `totalMinor`. If `alreadyEnrolled` is true, show "You already have this course" instead of a button.
+3. **Show the member's own price:** on the course page, on the server, call `getMemberQuote`. Show its `totalMinor`. If `alreadyEnrolled` is true, show "You already have this course" instead of a button. A cached or static course page must never carry one member's price, as with the name in section 4: read it in the browser after the page loads, through your own same-origin route that calls `getMemberQuote` on your server and answers `Cache-Control: no-store`.
 4. **Buy now, in the browser:** call `startMemberCheckout(offer, { csrf, expectedTotalMinor, paymentGateway, storageKey, coursePath })`, with the price the page showed as `expectedTotalMinor`.
 
 Act on the result:
