@@ -88,7 +88,6 @@ test("redirect: the order token is stored under the site's key, in the record th
     csrf: CSRF,
     expectedTotalMinor: "227900",
     storageKey,
-    email: "asha@example.org",
     coursePath: "/courses/project-management",
     fetch: site.fetch,
     storage: { ...storage, setItem: (k: string, v: string) => (order.push("store"), storage.setItem(k, v)) },
@@ -97,10 +96,12 @@ test("redirect: the order token is stored under the site's key, in the record th
   assert.deepEqual(result, REDIRECT);
   assert.deepEqual(order, ["store", `navigate ${REDIRECT.url}`]);
   // The shape scpmi-website's StoredCheckout (logic.ts) parses: orderId, token, email, coursePath, expiresAt.
+  // No contact detail is ever stored (email ""), and the record says it is a member's order.
   assert.deepEqual(JSON.parse(items.get(`scpmi:checkout:order:${ORDER}`)!), {
     orderId: ORDER,
     token: "ot_order_read_token",
-    email: "asha@example.org",
+    email: "",
+    member: true,
     coursePath: "/courses/project-management",
     expiresAt: "2026-10-29T10:00:00.000Z",
   });

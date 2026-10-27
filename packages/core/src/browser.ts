@@ -17,6 +17,10 @@
  * as scpmi-website's `StoredCheckout`), and only then sends the browser on. The
  * token never goes into an address, a cookie or a log.
  *
+ * ⛔ No contact detail is stored: `email` is always "" (a member is signed in
+ * and needs no "Log in with ..." hint; Helm on #1869), and `member: true` lets
+ * a return page tell a member's order from a guest's.
+ *
  * Never throws: every failure is a `fallback` answer.
  */
 import type { CheckoutAttribution, MemberCheckoutAnswer } from "./checkout.ts";
@@ -38,8 +42,6 @@ export interface StartMemberCheckoutOptions {
   attribution?: CheckoutAttribution;
   /** The site's sessionStorage key for an order, exactly as its return page reads it. */
   storageKey: (orderId: string) => string;
-  /** Kept with the token for the return page's copy (it is not sent anywhere). */
-  email?: string;
   /** The course page the buyer started on, for "Try again". */
   coursePath?: string | null;
   /** Default `/session/checkout`. */
@@ -56,7 +58,10 @@ export type StartMemberCheckoutResult = MemberCheckoutAnswer | { kind: "fallback
 export interface StoredMemberCheckout {
   orderId: string;
   token: string;
-  email: string;
+  /** Always "": the kit never stores a contact detail. Kept for the record's shape. */
+  email: "";
+  /** A member's order (the return page may skip the guest's sign-in hint). */
+  member: true;
   coursePath: string | null;
   expiresAt: string | null;
 }
@@ -111,7 +116,8 @@ export async function startMemberCheckout(offer: string, options: StartMemberChe
   const record: StoredMemberCheckout = {
     orderId: answer.orderId,
     token: answer.orderToken,
-    email: options.email ?? "",
+    email: "",
+    member: true,
     coursePath: options.coursePath ?? null,
     expiresAt: answer.orderTokenExpiresAt,
   };
