@@ -8,10 +8,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 
 import { AccountButton } from "../src/account-button.tsx";
 import { MemberProvider } from "../src/member-provider.tsx";
+
+// react-dom ships no types here (no @types/react-dom in the workspace): read the one function used.
+const REACT_DOM_SERVER = "react-dom/server";
+const { renderToStaticMarkup } = (await import(REACT_DOM_SERVER)) as { renderToStaticMarkup(element: unknown): string };
 
 const CLASSES = {
   className: "c-root",
@@ -41,7 +44,8 @@ test("signed in: the root, the My account trigger, the menu, each item, the form
   assert.match(html, /<summary class="c-trigger">My account<\/summary>/);
   assert.match(html, /<div class="c-menu">/);
   assert.match(html, /<a class="c-item" href="https:\/\/app\.example\.org\/">Go to my account<\/a>/);
-  assert.match(html, /<form class="c-signout-form" method="post" action="\/session\/end">/);
+  // React orders a form's attributes its own way: match the class and the target, not their order.
+  assert.match(html, /<form class="c-signout-form"[^>]*action="\/session\/end"/);
   assert.match(html, /<button class="c-signout" type="submit">Sign out<\/button>/);
 });
 

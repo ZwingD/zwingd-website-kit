@@ -1,0 +1,36 @@
+"use client";
+// Where the buyer comes back after paying: <origin>/checkout/return/<orderId>.
+// A real site confirms the payment here with the stored order token
+// (confirmHostedCheckoutPayment and myOrder, #1866); this example only shows
+// that the token was kept for this order in this tab, never in the address.
+import { use, useEffect, useState } from "react";
+
+import { orderStorageKey } from "@/components/buy-now";
+
+export default function CheckoutReturn({ params }: { params: Promise<{ orderId: string }> }) {
+  const { orderId } = use(params);
+  const [found, setFound] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    try {
+      const raw = window.sessionStorage.getItem(orderStorageKey(orderId));
+      const record = raw ? (JSON.parse(raw) as { orderId?: unknown; token?: unknown }) : null;
+      setFound(record?.orderId === orderId && typeof record.token === "string");
+    } catch {
+      setFound(false);
+    }
+  }, [orderId]);
+
+  if (found === null) return <p>Checking your order…</p>;
+  return found ? (
+    <section>
+      <h1>Thank you</h1>
+      <p>Your order {orderId} is on its way. This page would now confirm the payment with the stored order token.</p>
+    </section>
+  ) : (
+    <section>
+      <h1>We can&apos;t show this order here</h1>
+      <p>Open this page in the browser you paid in.</p>
+    </section>
+  );
+}

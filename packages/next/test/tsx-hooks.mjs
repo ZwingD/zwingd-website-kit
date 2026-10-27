@@ -6,6 +6,13 @@ import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
+// Next's subpath modules have no package "exports", which a bundler resolves and
+// Node's ESM resolver does not: name the file.
+export async function resolve(specifier, context, nextResolve) {
+  if (specifier === "next/navigation") return nextResolve("next/navigation.js", context);
+  return nextResolve(specifier, context);
+}
+
 export async function load(url, context, nextLoad) {
   if (!url.startsWith("file:") || !url.endsWith(".tsx")) return nextLoad(url, context);
   const fileName = fileURLToPath(url);

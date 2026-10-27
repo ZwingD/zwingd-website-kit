@@ -3,4 +3,7 @@ export { AccountButton, DEFAULT_ACCOUNT_LABELS } from "./account-button.tsx";
 export type { AccountButtonLabels, AccountButtonProps } from "./account-button.tsx";
 export { MemberProvider, useMember, useMemberState } from "./member-provider.tsx";
 export type { MemberProviderProps, MemberState } from "./member-provider.tsx";
-export { readSessionMe, SESSION_ME_PATH } from "./session-me.ts";
+export { createSessionMeReader, readSessionMe, SESSION_ME_PATH, SESSION_ME_TIMEOUT_MS } from "./session-me.ts";
+export type { SessionMeRead, SessionMeReader } from "./session-me.ts";
+export { startMemberCheckout } from "@zwingd-ce/website-kit";
+export type { StartMemberCheckoutOptions, StartMemberCheckoutResult } from "@zwingd-ce/website-kit";

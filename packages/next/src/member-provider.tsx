@@ -10,11 +10,14 @@
  *
  *   // Client mode, for cached or static pages: reads GET /session/me once on mount
  *   <MemberProvider mode="client" appUrl={process.env.ZWINGD_APP_URL!}>
+ *
+ * Client mode gives up after about 5 s and shows "Log in"; it asks again only
+ * on the visitor's next focus or click on the button (`retry`), never on a timer.
  */
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 
 import type { SiteMember } from "./server.ts";
-import { readSessionMe, SESSION_ME_PATH } from "./session-me.ts";
+import { createSessionMeReader, type SessionMeReader } from "./session-me.ts";
 
 export interface MemberState {
   member: SiteMember | null;
@@ -23,35 +26,55 @@ export interface MemberState {
   appUrl: string;
   /** True while client mode has not heard back from /session/me yet. */
   loading: boolean;
+  /**
+   * Client mode after a read that got no real answer: ask /session/me again.
+   * Called by AccountButton on the visitor's focus or click; does nothing otherwise.
+   */
+  retry: () => void;
 }
 
-const MemberContext = createContext<MemberState>({ member: null, signOutToken: null, appUrl: "", loading: false });
+const noop = () => undefined;
+const MemberContext = createContext<MemberState>({ member: null, signOutToken: null, appUrl: "", loading: false, retry: noop });
 
 export type MemberProviderProps =
   | { mode?: "server"; member: SiteMember | null; signOutToken: string | null; appUrl: string; children: ReactNode }
   | { mode: "client"; appUrl: string; children: ReactNode };
 
 function ClientMemberProvider({ appUrl, children }: { appUrl: string; children: ReactNode }) {
-  const [state, setState] = useState<MemberState>({ member: null, signOutToken: null, appUrl, loading: true });
+  const reader = useRef<SessionMeReader | null>(null);
+  const live = useRef(true);
+  const [read, setRead] = useState<{ member: MemberState["member"]; signOutToken: string | null; loading: boolean }>({
+    member: null,
+    signOutToken: null,
+    loading: true,
+  });
+
   useEffect(() => {
-    let live = true;
-    fetch(SESSION_ME_PATH, { credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" } })
-      .then((res) => (res.ok ? res.json() : null))
-      .catch(() => null)
-      .then((data) => {
-        if (live) setState({ ...readSessionMe(data), appUrl, loading: false });
-      });
+    live.current = true;
+    reader.current = createSessionMeReader();
+    void reader.current.read().then(({ member, signOutToken }) => {
+      if (live.current) setRead({ member, signOutToken, loading: false });
+    });
     return () => {
-      live = false;
+      live.current = false;
     };
   }, [appUrl]);
-  return <MemberContext.Provider value={state}>{children}</MemberContext.Provider>;
+
+  // Only a user action calls this: a read that timed out or failed is asked again once.
+  const retry = useCallback(() => {
+    const again = reader.current?.retry();
+    void again?.then(({ member, signOutToken }) => {
+      if (live.current) setRead({ member, signOutToken, loading: false });
+    });
+  }, []);
+
+  return <MemberContext.Provider value={{ ...read, appUrl, retry }}>{children}</MemberContext.Provider>;
 }
 
 export function MemberProvider(props: MemberProviderProps) {
   if (props.mode === "client") return <ClientMemberProvider appUrl={props.appUrl}>{props.children}</ClientMemberProvider>;
   const { member, signOutToken, appUrl, children } = props;
-  return <MemberContext.Provider value={{ member, signOutToken, appUrl, loading: false }}>{children}</MemberContext.Provider>;
+  return <MemberContext.Provider value={{ member, signOutToken, appUrl, loading: false, retry: noop }}>{children}</MemberContext.Provider>;
 }
 
 /** The member summary from the nearest `MemberProvider`, or null when nobody is signed in (or not known yet). */

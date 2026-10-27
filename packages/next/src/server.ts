@@ -8,7 +8,7 @@
  */
 import { cookies } from "next/headers";
 
-import type { MemberCheck, MemberContact, WebsiteKit } from "@zwingd-ce/website-kit";
+import type { MemberCheck, MemberCheckout, MemberContact, MemberQuoteCheck, WebsiteKit } from "@zwingd-ce/website-kit";
 
 /** What a page may show: the member's name only. Never an email or phone (see `getCheckoutMember`). */
 export interface SiteMember {
@@ -63,4 +63,17 @@ export async function getCheckoutMember(kit: WebsiteKit): Promise<(SiteMember & 
 export async function signOutToken(kit: WebsiteKit): Promise<string | null> {
   const value = (await cookieMap())[kit.cookieNames.csrf];
   return typeof value === "string" && value.length >= 32 ? value : null;
+}
+
+/**
+ * Member checkout: the signed-in member's own quote for one offer, so the page
+ * shows the price a start charges (`startMemberCheckout` echoes `totalMinor`).
+ * `ended` means the API said the session is over.
+ */
+export async function getMemberQuote(
+  checkout: MemberCheckout,
+  offer: string,
+  options: { visitorCountry?: string | null; couponCode?: string } = {}
+): Promise<MemberQuoteCheck> {
+  return checkout.getMemberQuote(await cookieMap(), offer, options);
 }

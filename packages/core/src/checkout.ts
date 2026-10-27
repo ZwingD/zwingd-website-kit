@@ -22,9 +22,8 @@
  * secret or the session token. The order token is answered to the browser that
  * paid, which keeps it in sessionStorage for the return page.
  *
- * Its own module (not flows.ts) while the Next.js adapter's change to flows.ts
- * (KIT-2) is open; `sameSitePost` mirrors flows.ts' `sameSiteForm` exactly and
- * is to replace it there once both are in.
+ * The same-site rule is the kit's one rule (same-site.ts), shared with
+ * POST /session/end.
  */
 import {
   CHECKOUT_QUOTE_TIMEOUT_MS,
@@ -36,7 +35,8 @@ import {
   type MemberQuote,
   type MemberStartInput,
 } from "./api-client.ts";
-import { CSRF_FIELD, type RequestView, type ResponseView, type WebsiteKit } from "./flows.ts";
+import type { RequestView, ResponseView, WebsiteKit } from "./flows.ts";
+import { sameSitePost } from "./same-site.ts";
 
 export { CHECKOUT_QUOTE_TIMEOUT_MS, CHECKOUT_START_TIMEOUT_MS } from "./api-client.ts";
 export type { MemberQuote } from "./api-client.ts";
@@ -119,17 +119,8 @@ const EXPECTED_TOTAL = /^\d{1,18}$/;
 const COUPON = /^[^\u0000-\u001f\u007f]{1,64}$/;
 const REASON = /^[A-Z][A-Z0-9_]*$/;
 const ATTRIBUTION_MAX = 200;
-// The same value rule as flows.ts' CSRF cookie.
-const CSRF_VALUE = /^[A-Za-z0-9\-._~]{32,128}$/;
 
 const baseHeaders = (): Record<string, string> => ({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
-
-function header(req: RequestView, name: string): string | undefined {
-  const direct = req.headers[name];
-  if (direct !== undefined) return direct;
-  const key = Object.keys(req.headers).find((k) => k.toLowerCase() === name);
-  return key === undefined ? undefined : req.headers[key];
-}
 
 const id = (value: unknown): string | undefined => (typeof value === "string" && OBJECT_ID.test(value) ? value : undefined);
 
@@ -160,16 +151,6 @@ export function createMemberCheckout(kit: WebsiteKit, options: MemberCheckoutOpt
     ...extra,
   });
 
-  /** flows.ts' `sameSiteForm`, unchanged: no cross-site Origin / Sec-Fetch-Site, AND the Strict cookie's value in the form. */
-  function sameSitePost(req: RequestView): boolean {
-    const origin = header(req, "origin");
-    if (origin !== undefined && origin !== config.origin) return false;
-    const site = header(req, "sec-fetch-site");
-    if (site !== undefined && site !== "same-origin") return false;
-    const cookie = req.cookies[names.csrf];
-    const sent = req.form?.[CSRF_FIELD];
-    return typeof cookie === "string" && CSRF_VALUE.test(cookie) && sent === cookie;
-  }
 
   async function visitorCountryOf(req: RequestView): Promise<string | undefined> {
     if (!options.visitorCountry) return undefined;
@@ -199,7 +180,7 @@ export function createMemberCheckout(kit: WebsiteKit, options: MemberCheckoutOpt
 
   async function checkout(req: RequestView): Promise<CheckoutResponseView> {
     if (req.method !== "POST") return { ...json(405, null), headers: { ...baseHeaders(), Allow: "POST" } };
-    if (!sameSitePost(req)) return json(403, null);
+    if (!sameSitePost(req, { origin: config.origin, csrfCookie: names.csrf })) return json(403, null);
 
     const form = req.form ?? {};
     const offer = id(form.offer);

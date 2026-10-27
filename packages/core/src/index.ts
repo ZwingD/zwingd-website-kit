@@ -38,4 +38,5 @@ export type {
   VisitorCountryResolver,
 } from "./checkout.ts";
 export { startMemberCheckout } from "./browser.ts";
+export { sameSitePost } from "./same-site.ts";
 export type { CheckoutStorage, StartMemberCheckoutOptions, StartMemberCheckoutResult, StoredMemberCheckout } from "./browser.ts";
