@@ -217,12 +217,21 @@ test("ok: redirect to the payment page with the order id and order token", async
     orderToken: ORDER_TOKEN,
     orderTokenExpiresAt: SESSION.orderTokenExpiresAt,
     resumed: false,
+    settled: false,
   });
 });
 
 test("ok with no payment (a zero total): redirect straight to the site's return page for the order", async () => {
   const { checkout } = setup({ start: [ok({ ...SESSION, redirectUrl: null, paymentState: "PAID" })] });
-  assert.equal(answerOf(await checkout.checkout(post())).url, `${ORIGIN}/checkout/return/${ORDER}`);
+  const answer = answerOf(await checkout.checkout(post()));
+  assert.equal(answer.url, `${ORIGIN}/checkout/return/${ORDER}`);
+  // kit #5: nothing is owed, so the member owns the offer now.
+  assert.equal(answer.settled, true);
+});
+
+test("kit #5: an earlier payment that turned out paid (no payment page, PAID) is settled too", async () => {
+  const { checkout } = setup({ start: [ok({ ...SESSION, redirectUrl: SESSION.redirectUrl, paymentState: "PAID" })] });
+  assert.equal(answerOf(await checkout.checkout(post())).settled, true);
 });
 
 test("an answer that does not have C3's shape is unavailable, never a redirect", async () => {

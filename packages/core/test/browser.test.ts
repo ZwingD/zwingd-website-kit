@@ -20,7 +20,10 @@ const REDIRECT = {
   orderToken: "ot_order_read_token",
   orderTokenExpiresAt: "2026-10-29T10:00:00.000Z",
   resumed: false,
+  settled: false,
 };
+/** kit #5: an order that settled at once (a zero total): the member owns the offer. */
+const SETTLED = { ...REDIRECT, url: `https://www.example.org/checkout/return/${ORDER}`, settled: true };
 
 function memoryStorage(failing = false) {
   const items = new Map<string, string>();
@@ -169,4 +172,46 @@ test("a 403, a 500, a non-JSON answer or a network fault: fallback unavailable",
     });
     assert.deepEqual(result, { kind: "fallback", reason: "unavailable" });
   }
+});
+
+test("kit #5: a settled order with no order token is already-owned, never a fallback to guest checkout", async () => {
+  let navigated = false;
+  const result = await startMemberCheckout(OFFER, {
+    csrf: CSRF,
+    expectedTotalMinor: "0",
+    storageKey,
+    fetch: fakeSite({ status: 200, body: { ...SETTLED, orderToken: null, orderTokenExpiresAt: null } }).fetch,
+    storage: memoryStorage().storage,
+    navigate: () => void (navigated = true),
+  });
+  assert.deepEqual(result, { kind: "already-owned" });
+  assert.equal(navigated, false);
+});
+
+test("kit #5: a settled order whose token cannot be stored is already-owned too", async () => {
+  const result = await startMemberCheckout(OFFER, {
+    csrf: CSRF,
+    expectedTotalMinor: "0",
+    storageKey,
+    fetch: fakeSite({ status: 200, body: SETTLED }).fetch,
+    storage: memoryStorage(true).storage,
+    navigate: () => assert.fail("navigated"),
+  });
+  assert.deepEqual(result, { kind: "already-owned" });
+});
+
+test("kit #5: a settled order with its token is stored and followed to the site's return page", async () => {
+  const { storage, items } = memoryStorage();
+  let went = "";
+  const result = await startMemberCheckout(OFFER, {
+    csrf: CSRF,
+    expectedTotalMinor: "0",
+    storageKey,
+    fetch: fakeSite({ status: 200, body: SETTLED }).fetch,
+    storage,
+    navigate: (to) => void (went = to),
+  });
+  assert.deepEqual(result, SETTLED);
+  assert.equal(went, SETTLED.url);
+  assert.ok(items.has(storageKey(ORDER)));
 });
