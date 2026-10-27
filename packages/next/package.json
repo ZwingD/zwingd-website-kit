@@ -8,19 +8,19 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "development": "./src/index.ts",
+      "@zwingd-ce/source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     },
     "./server": {
-      "development": "./src/server.ts",
+      "@zwingd-ce/source": "./src/server.ts",
       "types": "./dist/server.d.ts",
       "import": "./dist/server.js",
       "require": "./dist/server.cjs"
     },
     "./client": {
-      "development": "./src/client.ts",
+      "@zwingd-ce/source": "./src/client.ts",
       "types": "./dist/client.d.ts",
       "import": "./dist/client.js",
       "require": "./dist/client.cjs"
@@ -33,7 +33,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "test": "node --test --experimental-strip-types --conditions=development 'test/**/*.test.ts'",
+    "test": "node --test --experimental-strip-types --conditions=@zwingd-ce/source 'test/**/*.test.ts'",
     "type-check": "tsc --noEmit",
     "prepublishOnly": "pnpm build && pnpm test && pnpm type-check"
   },
