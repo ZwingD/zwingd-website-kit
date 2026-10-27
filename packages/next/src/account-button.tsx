@@ -37,11 +37,15 @@ export interface AccountButtonProps {
 }
 
 export function AccountButton(props: AccountButtonProps) {
-  const { member, signOutToken, appUrl } = useMemberState();
+  const { member, signOutToken, appUrl, loading } = useMemberState();
   // The path only: useSearchParams would force a Suspense boundary around every
   // header. A page that needs its query back passes `next`.
   const pathname = usePathname();
   const labels = { ...DEFAULT_ACCOUNT_LABELS, ...props.labels };
+
+  // Client mode, before /session/me answers: an empty element of the same
+  // class keeps the header's layout, so "Log in" never flashes for a member.
+  if (loading) return <span className={props.className} aria-busy="true" />;
 
   if (!member) {
     const next = props.next ?? pathname ?? "/";

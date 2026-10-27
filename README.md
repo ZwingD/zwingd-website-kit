@@ -15,7 +15,7 @@ It implements [session hand-over v1](https://github.com/ZwingD/zwingd-backend/bl
 `examples/next-site` is a working site. Copy these four pieces into yours:
 
 1. **`lib/zwingd.ts`**: makes the kit from the server environment, on first use, so `next build` never needs the secret.
-2. **`app/session/[action]/route.ts`**: serves `/session/start`, `/session/callback` and `/session/end`.
+2. **`app/session/[action]/route.ts`**: serves `/session/start`, `/session/callback`, `/session/end` and `/session/me`.
    ```ts
    import { createSessionRoutes } from "@zwingd-ce/website-kit-next";
    import { zwingd } from "@/lib/zwingd";
@@ -34,6 +34,14 @@ It implements [session hand-over v1](https://github.com/ZwingD/zwingd-backend/bl
    </MemberProvider>
    ```
    `AccountButton` is unstyled. Give it your own classes and labels (`labels={{ logIn: "Sign in" }}`).
+
+   **Cached or static pages:** use client mode instead. The browser reads `GET /session/me` once when the page loads, and the server-side read stays out of the page:
+   ```tsx
+   <MemberProvider mode="client" appUrl={process.env.ZWINGD_APP_URL!}>
+     <header>… <AccountButton className="…" /></header>
+   </MemberProvider>
+   ```
+   Until the answer arrives, `useMember()` is null and `AccountButton` renders an empty element with your class, so a member never sees "Log in" flash. `/session/me` answers `{ member: { firstName?, lastName? } | null, signOutToken }` with `Cache-Control: no-store`. It refuses cross-site reads, goes through the 60-second check cache, and clears the session cookie when the session has ended.
 4. **`.env.example`**: the five server settings. Never prefix them `NEXT_PUBLIC_`.
 
 **Rules the kit already keeps for you:**
@@ -70,7 +78,7 @@ import { configFromEnv, createSessionHandler, createWebsiteKit, getMember, signO
 const kit = createWebsiteKit(configFromEnv(process.env));
 const app = express();
 
-// Serves GET /session/start, GET /session/callback and POST /session/end.
+// Serves GET /session/start, GET /session/callback, POST /session/end and GET /session/me.
 app.use(createSessionHandler(kit));
 
 app.get("/", async (req, res) => {
@@ -91,6 +99,7 @@ app.get("/", async (req, res) => {
 - **Callback:** the code is exchanged exactly once, and a failed exchange is never retried.
 - **Saved path:** the `next` path is checked against the contract's saved-path rule and its fixtures. Anything that is not a same-origin path becomes `/`.
 - **Cookies:** all three are `__Host-`, `HttpOnly` and `Secure`. Each removal also carries `Secure; Path=/`.
+- **Who is signed in, in the browser:** `/session/me` answers the name and the sign-out form value only, to same-origin requests only.
 - **Sign-out:** `/session/end` accepts a same-site POST only, carrying the form's CSRF value. Its cookies are cleared whatever the API answers, and the member is sent on to the app's sign-out.
 - **Session checks:** a check is cached for 60 seconds. The session is dropped only on `active: false`, never on a 429, a 503 or a timeout. Contact details are answered only from a check under 60 seconds old. Use `freshMember` before you prefill a checkout.
 - **Secrets:** no token, secret, verifier or code is ever logged, thrown or put in a URL beyond the contract's own redirects.

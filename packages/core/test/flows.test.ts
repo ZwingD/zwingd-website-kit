@@ -220,10 +220,11 @@ test("end: appSignOutUrl null falls back to the app's sign-out", async () => {
   assert.equal(res.headers.Location, `${APP}/session/sign-out?return_origin=${encodeURIComponent(ORIGIN)}`);
 });
 
-test("handle: routes the three paths and leaves every other path alone", async () => {
+test("handle: routes the four paths and leaves every other path alone", async () => {
   const { kit } = kitWith({});
   assert.equal((await kit.handle(req({ url: `${ORIGIN}/session/start` })))?.status, 302);
   assert.equal((await kit.handle(req({ url: `${ORIGIN}/session/end` })))?.status, 405);
+  assert.equal((await kit.handle(req({ url: `${ORIGIN}/session/me` })))?.status, 200);
   assert.equal(await kit.handle(req({ url: `${ORIGIN}/courses/x` })), null);
 });
 
@@ -234,4 +235,78 @@ test("insecureLocalCookies: unprefixed names and no Secure, for http://localhost
   const line = cookieNamed(res.setCookies, "zw_start")!;
   assert.ok(line);
   assert.equal(line.includes("Secure"), false);
+});
+
+const ACTIVE = { status: 200, body: { active: true, expiresAt: EXPIRES, member: MEMBER } };
+const signedInCookies = (csrf?: string) => ({ "__Host-zw_session": TOKEN, ...(csrf ? { "__Host-zw_csrf": csrf } : {}) });
+
+test("me: signed in answers the name only and the sign-out value, no-store, Vary: Cookie", async () => {
+  const { kit } = kitWith({ session: ACTIVE });
+  const csrf = "c".repeat(43);
+  const res = await kit.handle(req({ url: `${ORIGIN}/session/me`, cookies: signedInCookies(csrf), headers: { "sec-fetch-site": "same-origin" } }));
+  assert.equal(res?.status, 200);
+  assert.equal(res?.headers["Cache-Control"], "no-store");
+  assert.equal(res?.headers.Vary, "Cookie");
+  assert.match(res!.headers["Content-Type"]!, /^application\/json/);
+  assert.deepEqual(JSON.parse(res!.body!), { member: { firstName: "Asha", lastName: "Rao" }, signOutToken: csrf });
+  assert.equal(res!.body!.includes("asha@example.org"), false);
+  assert.deepEqual(res?.setCookies, []);
+});
+
+test("me: a signed-in browser with no CSRF cookie gets one minted and set", async () => {
+  const { kit } = kitWith({ session: ACTIVE });
+  const res = await kit.me(req({ url: `${ORIGIN}/session/me`, cookies: signedInCookies() }));
+  const body = JSON.parse(res.body!);
+  const line = cookieNamed(res.setCookies, "__Host-zw_csrf")!;
+  assert.ok(line.includes("SameSite=Strict"));
+  assert.equal(jar(res.setCookies)["__Host-zw_csrf"], body.signOutToken);
+});
+
+test("me: signed out answers null and never calls the API", async () => {
+  const { kit, api } = kitWith({});
+  const res = await kit.me(req({ url: `${ORIGIN}/session/me` }));
+  assert.deepEqual(JSON.parse(res.body!), { member: null, signOutToken: null });
+  assert.equal(api.calls.length, 0);
+});
+
+test("me: active false answers null and clears the session cookie", async () => {
+  const { kit } = kitWith({ session: { status: 200, body: { active: false } } });
+  const res = await kit.me(req({ url: `${ORIGIN}/session/me`, cookies: signedInCookies("c".repeat(43)) }));
+  assert.deepEqual(JSON.parse(res.body!), { member: null, signOutToken: null });
+  assert.match(cookieNamed(res.setCookies, "__Host-zw_session")!, /Max-Age=0/);
+});
+
+test("me: a 503 keeps the member signed in, with no name yet", async () => {
+  const { kit } = kitWith({ session: { status: 503 } });
+  const res = await kit.me(req({ url: `${ORIGIN}/session/me`, cookies: signedInCookies("c".repeat(43)) }));
+  assert.deepEqual(JSON.parse(res.body!).member, {});
+  assert.deepEqual(res.setCookies, []);
+});
+
+test("me: the check is cached, so a second read within 60 s calls the API once", async () => {
+  const { kit, api } = kitWith({ session: ACTIVE });
+  for (let i = 0; i < 2; i += 1) await kit.me(req({ url: `${ORIGIN}/session/me`, cookies: signedInCookies("c".repeat(43)) }));
+  assert.equal(api.calls.length, 1);
+});
+
+for (const [label, headers] of [
+  ["a cross-site Sec-Fetch-Site", { "sec-fetch-site": "cross-site" }],
+  ["a same-site (not same-origin) Sec-Fetch-Site", { "sec-fetch-site": "same-site" }],
+  ["a foreign Origin", { origin: "https://evil.example" }],
+] as const) {
+  test(`me: refuses ${label} with 403 before any check`, async () => {
+    const { kit, api } = kitWith({ session: ACTIVE });
+    const res = await kit.me(req({ url: `${ORIGIN}/session/me`, cookies: signedInCookies("c".repeat(43)), headers }));
+    assert.equal(res.status, 403);
+    assert.equal(res.body, undefined);
+    assert.equal(api.calls.length, 0);
+  });
+}
+
+test("me: POST is 405, HEAD has no body", async () => {
+  const { kit } = kitWith({});
+  assert.equal((await kit.me(req({ method: "POST", url: `${ORIGIN}/session/me` }))).status, 405);
+  const head = await kit.me(req({ method: "HEAD", url: `${ORIGIN}/session/me` }));
+  assert.equal(head.status, 200);
+  assert.equal(head.body, undefined);
 });

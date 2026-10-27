@@ -90,3 +90,16 @@ test("any other /session/ path answers 404", async () => {
   const { routes } = setup();
   assert.equal((await routes.GET(new Request(`${ORIGIN}/session/other`))).status, 404);
 });
+
+test("GET /session/me answers JSON with no-store, and refuses a cross-site read", async () => {
+  const { routes } = setup();
+  const res = await routes.GET(new Request(`${ORIGIN}/session/me`, { headers: { "sec-fetch-site": "same-origin" } }));
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("cache-control"), "no-store");
+  assert.match(res.headers.get("content-type")!, /^application\/json/);
+  assert.deepEqual(await res.json(), { member: null, signOutToken: null });
+
+  const cross = await routes.GET(new Request(`${ORIGIN}/session/me`, { headers: { "sec-fetch-site": "cross-site" } }));
+  assert.equal(cross.status, 403);
+  assert.equal(await cross.text(), "");
+});

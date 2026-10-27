@@ -25,7 +25,7 @@ async function cookieMap(): Promise<Record<string, string>> {
 
 // SHORTCUT: a Server Component cannot set cookies, so when the API answers
 // `active: false` the stale session cookie stays until the member's next
-// /session/* call or its own expiry, and each render checks again. Ceiling:
+// /session/* call (client mode's /session/me clears it) or its own expiry, and each render checks again. Ceiling:
 // one session check per render for such a browser. Upgrade trigger: session
 // call volume (rate_limited) from a site with many signed-out-but-cookied
 // visitors; then clear it from middleware.

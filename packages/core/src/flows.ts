@@ -9,6 +9,10 @@
  *   POST /session/end       same-site POST only; ends the session on the API,
  *                           clears the cookies whatever the answer, 303 to the
  *                           app's sign-out.
+ *   GET  /session/me        same-origin only; who is signed in, by name, as
+ *                           JSON, through the 60 s check cache. For pages
+ *                           that are cached or static and read the member in
+ *                           the browser.
  *
  * Every answer carries `Cache-Control: no-store` and `Referrer-Policy:
  * no-referrer`. No token, secret, verifier or code is ever logged, thrown or
@@ -27,7 +31,7 @@ import { createMemberReader, type MemberCheck, type MemberReader } from "./membe
 import { base64url, codeChallenge, randomToken, STATE_LENGTH, STATE_PATTERN, VERIFIER_LENGTH, VERIFIER_PATTERN } from "./pkce.ts";
 import { savedPath } from "./saved-path.ts";
 
-export const SESSION_PATHS = Object.freeze({ start: "/session/start", callback: "/session/callback", end: "/session/end" });
+export const SESSION_PATHS = Object.freeze({ start: "/session/start", callback: "/session/callback", end: "/session/end", me: "/session/me" });
 
 /** The form field the sign-out form carries the CSRF value in. */
 export const CSRF_FIELD = "csrf";
@@ -49,6 +53,16 @@ export interface ResponseView {
   headers: Record<string, string>;
   /** One entry per `Set-Cookie` header. */
   setCookies: string[];
+  /** A text body (only `/session/me` has one). */
+  body?: string;
+}
+
+/** What `GET /session/me` answers. */
+export interface SessionMe {
+  /** The name only, or null when nobody is signed in. */
+  member: { firstName?: string; lastName?: string } | null;
+  /** The sign-out form's `csrf` value while signed in, else null. */
+  signOutToken: string | null;
 }
 
 const CODE = /^[0-9a-f]{64}$/;
@@ -99,7 +113,8 @@ export interface WebsiteKit extends MemberReader {
   start(req: RequestView): Promise<ResponseView>;
   callback(req: RequestView): Promise<ResponseView>;
   end(req: RequestView): Promise<ResponseView>;
-  /** Route a request to start / callback / end; null when the path is not one of the three. */
+  me(req: RequestView): Promise<ResponseView>;
+  /** Route a request to start / callback / end / me; null when the path is none of them. */
   handle(req: RequestView): Promise<ResponseView | null>;
   /**
    * The value the sign-out form posts as `csrf`. When the browser has none yet
@@ -204,25 +219,65 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
     return redirect(303, location, [clearSession(), clearCsrf()]);
   }
 
+  function csrfFor(cookies: Record<string, string>): { token: string; setCookie: string | null } {
+    const existing = cookies[names.csrf];
+    if (typeof existing === "string" && CSRF_VALUE.test(existing)) return { token: existing, setCookie: null };
+    const token = randomToken(43);
+    return { token, setCookie: serializeCookie(names.csrf, token, { sameSite: "Strict", maxAge: CSRF_COOKIE_MAX_AGE_S }, local) };
+  }
+
+  /**
+   * Same-origin reads only. No CORS header is ever sent, so another site's
+   * script cannot read the answer anyway; this also refuses the request
+   * before the check is spent on it.
+   */
+  function sameOriginRead(req: RequestView): boolean {
+    const origin = header(req, "origin");
+    if (origin !== undefined && origin !== config.origin) return false;
+    const site = header(req, "sec-fetch-site");
+    return site === undefined || site === "same-origin" || site === "none";
+  }
+
+  async function me(req: RequestView): Promise<ResponseView> {
+    if (req.method !== "GET" && req.method !== "HEAD") return { status: 405, headers: { ...baseHeaders(), Allow: "GET" }, setCookies: [] };
+    if (!sameOriginRead(req)) return { status: 403, headers: baseHeaders(), setCookies: [] };
+
+    const check = await members.getMember(req.cookies);
+    const setCookies: string[] = [];
+    const answer: SessionMe = { member: null, signOutToken: null };
+    if (check.status === "ended") {
+      setCookies.push(clearSession());
+    } else if (check.status === "signed-in") {
+      const m = check.member;
+      answer.member = { ...(m?.firstName ? { firstName: m.firstName } : {}), ...(m?.lastName ? { lastName: m.lastName } : {}) };
+      const csrf = csrfFor(req.cookies);
+      answer.signOutToken = csrf.token;
+      if (csrf.setCookie) setCookies.push(csrf.setCookie);
+    }
+    return {
+      status: 200,
+      headers: { ...baseHeaders(), "Content-Type": "application/json; charset=utf-8", Vary: "Cookie" },
+      setCookies,
+      ...(req.method === "GET" ? { body: JSON.stringify(answer) } : {}),
+    };
+  }
+
   return {
     config,
     cookieNames: names,
     start,
     callback,
     end,
+    me,
     async handle(req) {
       const path = new URL(req.url, config.origin).pathname;
       if (path === SESSION_PATHS.start) return start(req);
       if (path === SESSION_PATHS.callback) return callback(req);
       if (path === SESSION_PATHS.end) return end(req);
+      if (path === SESSION_PATHS.me) return me(req);
       return null;
     },
-    csrfFor(cookies) {
-      const existing = cookies[names.csrf];
-      if (typeof existing === "string" && CSRF_VALUE.test(existing)) return { token: existing, setCookie: null };
-      const token = randomToken(43);
-      return { token, setCookie: serializeCookie(names.csrf, token, { sameSite: "Strict", maxAge: CSRF_COOKIE_MAX_AGE_S }, local) };
-    },
+    csrfFor,
     clearSessionCookie: clearSession,
     getMember: members.getMember,
     freshMember: members.freshMember,

@@ -59,13 +59,13 @@ export function writeResponse(res: ServerResponse, view: ResponseView): void {
   res.statusCode = view.status;
   for (const [name, value] of Object.entries(view.headers)) res.setHeader(name, value);
   if (view.setCookies.length > 0) res.setHeader("Set-Cookie", view.setCookies);
-  res.end();
+  res.end(view.body);
 }
 
 const SESSION_PREFIX = "/session/";
 
 /**
- * Serves `/session/start`, `/session/callback` and `/session/end`; any other
+ * Serves `/session/start`, `/session/callback`, `/session/end` and `/session/me`; any other
  * path goes to `next` (Express), or answers 404 when there is none.
  */
 export function createSessionHandler(kit: WebsiteKit) {

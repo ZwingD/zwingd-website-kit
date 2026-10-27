@@ -1,5 +1,5 @@
 /**
- * The three /session/* routes as App Router route handlers, on the Web
+ * The /session/* routes (start, callback, end, me) as App Router route handlers, on the Web
  * `Request` / `Response` only, so they run on Node and edge alike:
  *
  *   // app/session/[action]/route.ts
@@ -37,11 +37,11 @@ export async function toRequestView(request: Request): Promise<RequestView> {
   };
 }
 
-/** A Web response from the core's view: status, headers, one Set-Cookie per cookie, no body. */
+/** A Web response from the core's view: status, headers, one Set-Cookie per cookie, the body if any. */
 export function toResponse(view: ResponseView): Response {
   const headers = new Headers(view.headers);
   for (const line of view.setCookies) headers.append("Set-Cookie", line);
-  return new Response(null, { status: view.status, headers });
+  return new Response(view.body ?? null, { status: view.status, headers });
 }
 
 /** `{ GET, POST }` for `app/session/[action]/route.ts`; any other /session/ path answers 404. */
