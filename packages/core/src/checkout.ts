@@ -77,6 +77,11 @@ export type MemberCheckoutAnswer =
       orderToken: string | null;
       orderTokenExpiresAt: string | null;
       resumed: boolean;
+      /**
+       * True when nothing is owed: the order settled at once (a zero total) or an
+       * earlier payment turned out paid. The member owns the offer now (kit #5).
+       */
+      settled: boolean;
     }
   | { kind: "already-owned" }
   | { kind: "fallback"; reason: CheckoutFallbackReason; refusal?: string; quote?: MemberQuote };
@@ -216,6 +221,7 @@ export function createMemberCheckout(kit: WebsiteKit, options: MemberCheckoutOpt
         orderToken: session.orderToken,
         orderTokenExpiresAt: session.orderTokenExpiresAt,
         resumed: session.resumed,
+        settled: session.redirectUrl === null || session.paymentState === "PAID",
       });
     }
     if (started.error === "login_required") return json(200, fallback("signed-out"), await ended(token));

@@ -1,97 +1,132 @@
 # Zwingd website kit
 
-The kit lets a workspace's own website recognise a member who is signed in to the workspace's Zwingd app. The website shows "My account" instead of "Log in" and never shows a sign-in form of its own.
+The kit is for a workspace's own website. It recognises a member who is signed in to the workspace's Zwingd app and shows "My account" instead of "Log in". It also lets that member buy straight to payment: no checkout pop-up and no email to type. The website never shows a sign-in form of its own.
 
-It implements [session hand-over v1](https://github.com/ZwingD/zwingd-backend/blob/develop/docs/storefront-api/session-handover-v1.md). That document is the contract, and this kit follows it rule for rule.
+It implements [session hand-over v1 and v1.1](https://github.com/ZwingD/zwingd-backend/blob/develop/docs/storefront-api/session-handover-v1.md). That document is the contract, and the kit follows it rule for rule. The platform's own guide for website teams is [website-kit.md](https://github.com/ZwingD/zwingd-backend/blob/develop/docs/storefront-api/website-kit.md).
 
 | Package | For |
 |---|---|
-| `@zwingd-ce/website-kit` | The core. No framework and no runtime dependency (Web Crypto and `fetch`). Node 18.17+ and edge runtimes |
-| `@zwingd-ce/website-kit-node` | Express and plain Node `http` servers |
-| `@zwingd-ce/website-kit-next` | Next.js App Router, Next 15 and 16 |
+| `@zwingd-ce/website-kit` | The core. No framework and no runtime dependency (Web Crypto and `fetch` only). Runs on Node 18.17+ and edge runtimes |
+| `@zwingd-ce/website-kit-node` | Express and plain Node `http` servers. Re-exports the core |
+| `@zwingd-ce/website-kit-next` | Next.js App Router, Next 15 and 16. Re-exports the core |
 
-## Next.js (App Router)
+## 1. Install
 
-`examples/next-site` is a working site. Copy these four pieces into yours:
+```sh
+npm install @zwingd-ce/website-kit-next   # a Next.js site
+npm install @zwingd-ce/website-kit-node   # an Express or Node http site
+```
 
-1. **`lib/zwingd.ts`**: makes the kit from the server environment, on first use, so `next build` never needs the secret.
-2. **`app/session/[action]/route.ts`**: serves `/session/start`, `/session/callback`, `/session/end` and `/session/me`.
-   ```ts
-   import { createSessionRoutes } from "@zwingd-ce/website-kit-next";
-   import { zwingd } from "@/lib/zwingd";
-   export const dynamic = "force-dynamic";
-   export function GET(request: Request) { return createSessionRoutes(zwingd()).GET(request); }
-   export function POST(request: Request) { return createSessionRoutes(zwingd()).POST(request); }
-   ```
-3. **The header** (`app/layout.tsx`): the server reads the member, by name only, and the button shows "Log in" or "My account".
-   ```tsx
-   import { AccountButton, MemberProvider } from "@zwingd-ce/website-kit-next/client";
-   import { getMember, signOutToken } from "@zwingd-ce/website-kit-next/server";
-   const kit = zwingd();
-   const [member, csrf] = await Promise.all([getMember(kit), signOutToken(kit)]);
-   <MemberProvider member={member} signOutToken={csrf} appUrl={kit.config.appUrl}>
-     <header>… <AccountButton className="…" menuClassName="…" itemClassName="…" /></header>
-   </MemberProvider>
-   ```
-   `AccountButton` is unstyled. Give it your own labels (`labels={{ logIn: "Sign in" }}`) and a class on every part it draws: `className` (the root), `loadingClassName` (the placeholder), `logInClassName` (the "Log in" link), `triggerClassName` ("My account"), `menuClassName`, `itemClassName` (each menu item), `signOutFormClassName` and `signOutClassName` (the sign-out form and its button). A part with no class of its own uses `className`, or `itemClassName` for the sign-out button.
+## 2. What the platform team sets for your workspace
 
-   **Cached or static pages:** use client mode instead. The browser reads `GET /session/me` once when the page loads, and the server-side read stays out of the page:
-   ```tsx
-   <MemberProvider mode="client" appUrl={process.env.ZWINGD_APP_URL!}>
-     <header>… <AccountButton className="…" /></header>
-   </MemberProvider>
-   ```
-   Until the answer arrives, `useMember()` is null and `AccountButton` renders an empty element with your class, so a member never sees "Log in" flash. The read gives up after about 5 seconds and shows "Log in", so a slow API never leaves the header empty; it asks again only when the visitor next focuses or clicks the button, never on a timer. `/session/me` answers `{ member: { firstName?, lastName? } | null, signOutToken }` with `Cache-Control: no-store`. It refuses cross-site reads, goes through the 60-second check cache, and clears the session cookie when the session has ended.
-4. **`.env.example`**: the five server settings. Never prefix them `NEXT_PUBLIC_`.
+Ask the Zwingd platform team for these before you start. Each one is a setting of your workspace, and nothing works until it is in place.
 
-**Rules the kit already keeps for you:**
-- A plain page view never contacts the app. Only a click on "Log in" starts a hand-over.
-- `getMember` returns the name only.
-- For a checkout prefill, use `getCheckoutMember`. It makes a fresh check and returns an email or phone only when that check succeeded.
-- A member's Buy Now goes straight to payment through member checkout (below). A visitor who is not signed in keeps your guest checkout.
+| Setting | What it does | Who sets it |
+|---|---|---|
+| Your website's origin in the **session hand-over list** (`sessionReturnOrigins`), with a **client secret** for it | Lets the app send signed-in members to your site. The secret is shown once; keep it in `ZWINGD_SESSION_CLIENT_SECRET` | The platform team |
+| Your website's origin in **Allowed websites** (`websiteOrigins`) | Lets your site call the API from the browser and be the return address of a checkout | Your workspace admin (Settings > Checkout), or the platform team |
+| **Website checkout** on (`commerce.websiteCheckout.enabled`) | Lets a checkout return to your website at all | Your workspace admin, or the platform team |
+| Checkout mode **hosted** (`commerce.checkoutMode`) | Hosted checkout is the order path member checkout uses | The platform team |
 
-**Member checkout** (session hand-over v1.1): a member signed in on your website buys with one click, no pop-up and no email to type.
-1. In `lib/zwingd.ts`, make one `createMemberCheckout(zwingd(), { visitorCountry })`. `visitorCountry(request)` returns the visitor's master-data country id from your host's geo header (the example maps `x-vercel-ip-country` through `ZWINGD_COUNTRY_IDS`), or null. The country never comes from the request body.
-2. Pass it to the routes: `createSessionRoutes(zwingd(), { checkout: memberCheckout() })`. They then also serve `POST /session/checkout`.
-3. On the course page (a Server Component), read the member's own price with `getMemberQuote(memberCheckout(), offer, { visitorCountry })` and show its `totalMinor`. That is the price a start charges.
-4. The Buy Now button (a Client Component) calls `startMemberCheckout(offer, { csrf, expectedTotalMinor: quote.totalMinor, paymentGateway: quote.gateways[0]?.paymentGateway, storageKey })`. `csrf` is the sign-out value (`signOutToken(kit)`, or `/session/me`'s `signOutToken`); `storageKey(orderId)` is the sessionStorage key your return page reads.
-   - `redirect`: the order token is stored (`{ orderId, token, email: "", coursePath, expiresAt, member: true }`) and the browser goes to payment, then back to `<origin>/checkout/return/<orderId>`. The return address is always that page, never one from the browser.
-   - `already-owned`: show "You already have this course".
-   - `fallback`: use your guest checkout. `reason` says why: `signed-out`, `not-available` (an API without member checkout), `checkout-disabled`, `price-changed` (with the new `quote` to show; nothing is started at a price the page did not show), `refused`, `unavailable` or `storage-unavailable`.
+An origin is written exactly as `https://<host>` or `https://<host>:<port>`: lower case, no path, no trailing slash. Sign-in needs the first row only. Member checkout needs all four.
 
-`examples/next-site` has it all: `app/courses/[offer]/page.tsx`, `components/buy-now.tsx` and `app/checkout/return/[orderId]/page.tsx`.
+## 3. Server settings
 
-**Local development:**
-1. Set `ZWINGD_INSECURE_LOCAL_COOKIES=true` and `ZWINGD_SITE_ORIGIN=http://localhost:3100`.
-2. Have the platform team list that origin for the dev workspace.
-3. Run `pnpm --filter next-site dev`.
-
-## Before you start
-
-The platform team lists your website's origin for the workspace and gives you a client secret. Your **server** environment then holds:
+Your **server** environment holds these. None of them may reach the browser, so never prefix one with `NEXT_PUBLIC_`.
 
 | Name | Value |
 |---|---|
 | `ZWINGD_API_URL` | The API address |
-| `ZWINGD_APP_URL` | The workspace's app address, exactly as given |
+| `ZWINGD_APP_URL` | The workspace's app address, exactly as the platform team gave it |
 | `ZWINGD_REALM` | The workspace's realm |
-| `ZWINGD_SESSION_CLIENT_SECRET` | The client secret for this website's origin |
+| `ZWINGD_SESSION_CLIENT_SECRET` | The client secret for this website's origin (`zsh_` and 64 hex characters) |
 | `ZWINGD_SITE_ORIGIN` | This website's origin, exactly as listed, for example `https://www.example.org` |
+| `ZWINGD_INSECURE_LOCAL_COOKIES` | `true` for local development on `http://localhost` only. The kit refuses it when `NODE_ENV=production` |
 
-None of these may reach the browser.
+The example site also reads `ZWINGD_COUNTRY_IDS`. That variable is the example's own way to price by the visitor's country (section 7), not a kit setting.
 
-## Express
+## 4. The routes the kit serves
+
+| Route | What it does |
+|---|---|
+| `GET /session/start?next=<path>` | "Log in". Sends the browser to the app's hand-over, always with `prompt=login`. The kit never runs a silent check, and a page view never starts one |
+| `GET /session/callback` | The app sends the browser back here. The code is exchanged once, server to server, and the site's session cookie is set. It renders nothing |
+| `POST /session/end` | "Sign out". A same-site form POST only; the website and the app both sign out |
+| `GET /session/me` | Who is signed in, by name only, for pages that read the member in the browser (client mode) |
+| `POST /session/checkout` | Member checkout: the member's "Buy now" (section 7). Served when you pass a checkout to the routes |
+
+## 5. Next.js (App Router)
+
+`examples/next-site` is a working site. Copy these pieces into yours.
+
+1. **`lib/zwingd.ts`** makes the kit from the server environment on first use, so `next build` never needs the secret. It also makes the member checkout.
+2. **`app/session/[action]/route.ts`** serves every route above:
+   ```ts
+   import { createSessionRoutes } from "@zwingd-ce/website-kit-next";
+   import { memberCheckout, zwingd } from "@/lib/zwingd";
+   export const dynamic = "force-dynamic";
+   export function GET(request: Request) { return createSessionRoutes(zwingd(), { checkout: memberCheckout() }).GET(request); }
+   export function POST(request: Request) { return createSessionRoutes(zwingd(), { checkout: memberCheckout() }).POST(request); }
+   ```
+3. **The header** (`app/layout.tsx`): see "Server mode or client mode" below.
+
+### Server mode or client mode
+
+**Server mode** suits dynamic pages. The server reads the member, by name only, and hands it to the button:
+
+```tsx
+import { AccountButton, MemberProvider } from "@zwingd-ce/website-kit-next/client";
+import { getMember, signOutToken } from "@zwingd-ce/website-kit-next/server";
+
+const kit = zwingd();
+const [member, csrf] = await Promise.all([getMember(kit), signOutToken(kit)]);
+
+<MemberProvider member={member} signOutToken={csrf} appUrl={kit.config.appUrl}>
+  <header>… <AccountButton className="…" /></header>
+</MemberProvider>
+```
+
+**Client mode** suits cached or static pages. A page that is cached for everyone must not carry one member's name, so the browser reads `GET /session/me` once after the page loads instead:
+
+```tsx
+<MemberProvider mode="client" appUrl={process.env.ZWINGD_APP_URL!}>
+  <header>… <AccountButton className="…" /></header>
+</MemberProvider>
+```
+
+- Until the answer arrives, the button draws an empty placeholder, so "Log in" never flashes for a member.
+- The read gives up after about 5 seconds and shows "Log in", so a slow API never leaves the header empty. It asks again only on the visitor's next focus or click on the button, never on a timer.
+- When that retry turns a focused "Log in" into "My account", focus moves to "My account".
+- `/session/me` answers `{ member: { firstName?, lastName? } | null, signOutToken }` with `Cache-Control: no-store`, to same-origin requests only.
+
+### AccountButton
+
+`AccountButton` is unstyled. Give it your labels (`labels={{ logIn: "Sign in" }}`) and a class on each part it draws:
+
+| Prop | Part |
+|---|---|
+| `className` | The root of each state: the `<details>` when signed in. Also used by the Log in link and the placeholder when they have no class of their own |
+| `loadingClassName` | The empty placeholder while client mode waits |
+| `logInClassName` | The "Log in" link |
+| `triggerClassName` | "My account" (the `<summary>`) |
+| `menuClassName` | The menu that opens under it |
+| `itemClassName` | Each menu item. Also used by the sign-out button when it has no class of its own |
+| `signOutFormClassName` | The sign-out `<form>` |
+| `signOutClassName` | The "Sign out" button |
+
+## 6. Express and Node http
 
 ```ts
 import express from "express";
-import { configFromEnv, createSessionHandler, createWebsiteKit, getMember, signOutFormToken } from "@zwingd-ce/website-kit-node";
+import { configFromEnv, createMemberCheckout, createSessionHandler, createWebsiteKit, getMember, signOutFormToken } from "@zwingd-ce/website-kit-node";
 
 const kit = createWebsiteKit(configFromEnv(process.env));
+// countryIdFor is yours: your geo header mapped to a master-data country id, or null.
+const checkout = createMemberCheckout(kit, { visitorCountry: (req) => countryIdFor(req.headers["x-country"]) });
 const app = express();
 
-// Serves GET /session/start, GET /session/callback, POST /session/end and GET /session/me,
-// and with { checkout: createMemberCheckout(kit, { visitorCountry }) } also POST /session/checkout.
-app.use(createSessionHandler(kit));
+// Serves the five routes in section 4. Without { checkout }, POST /session/checkout is left to your site.
+app.use(createSessionHandler(kit, { checkout }));
 
 app.get("/", async (req, res) => {
   const check = await getMember(kit, req, res); // clears the cookie when the session is over
@@ -105,19 +140,89 @@ app.get("/", async (req, res) => {
 });
 ```
 
+## 7. Member checkout
+
+A member signed in on your website buys with one click. A visitor who is not signed in keeps your own guest checkout (the website checkout pop-up). Your site picks between them by whether the visitor has a session.
+
+1. **Make the checkout once on the server:** `createMemberCheckout(kit, { visitorCountry })`.
+   - `visitorCountry(request)` returns the visitor's master-data country id from your host's geo header, or null. It prices only a member whose profile has no country.
+   - The country never comes from the request body.
+   - The example maps `x-vercel-ip-country` through `ZWINGD_COUNTRY_IDS`.
+2. **Serve the route:** pass `{ checkout }` to `createSessionRoutes` (Next) or `createSessionHandler` (Node).
+3. **Show the member's own price.** On the course page, on the server, call `getMemberQuote(checkout, offer, { visitorCountry })` (Next: from `@zwingd-ce/website-kit-next/server`), or `checkout.getMemberQuote(cookies, offer, { visitorCountry })`.
+   - Show its `totalMinor`, scaled by `minorUnitExponent`. That is exactly what a start charges.
+   - If `quote.alreadyEnrolled` is true, show "You already have this course" instead of a button.
+4. **Buy now (in the browser):**
+   ```ts
+   import { startMemberCheckout } from "@zwingd-ce/website-kit-next/client";
+   const result = await startMemberCheckout(offer, {
+     csrf,                                     // see "The CSRF value"
+     expectedTotalMinor: quote.totalMinor,     // the price the page SHOWED
+     paymentGateway: quote.gateways[0]?.paymentGateway,
+     storageKey: (orderId) => `mysite:checkout:order:${orderId}`, // what your return page reads
+     coursePath: location.pathname,
+   });
+   ```
+
+| `result` | What happened | What the page does |
+|---|---|---|
+| `redirect` | The order was made and the order token is stored. The browser is on its way to payment, or straight to your return page when nothing was owed (`result.settled`) | Nothing: the browser comes back to `<origin>/checkout/return/<orderId>` |
+| `already-owned` | The member already has the course (`ALREADY_ENROLLED`), or the order settled at once but its token could not be kept | Show "You already have this course". Never offer guest checkout |
+| `fallback`, `price-changed` | The price moved since the page was shown. The kit quoted again once and starts nothing at a price the page did not show. `result.quote` holds the new price when it could be read | Show the new price; the next click uses it |
+| `fallback`, `checkout-disabled` | The workspace has website checkout off | Use your guest checkout's own fallback |
+| `fallback`, `signed-out` | No session, or the API said it is over (the cookie is cleared) | Use your guest checkout |
+| `fallback`, `not-available` | This API has no member checkout | Use your guest checkout |
+| `fallback`, `refused` | Another refusal; `result.refusal` holds its code (for example `BUYER_NOT_ELIGIBLE`) | Say checkout isn't available for this course, or use your guest checkout |
+| `fallback`, `unavailable` | The API could not answer (busy, down, a timeout). A start is never retried | Say checkout isn't available right now, or use your guest checkout |
+| `fallback`, `storage-unavailable` | The browser could not keep the order token, so the return page could not read the order. The browser is not sent to payment | Use your guest checkout |
+
+A settled order (nothing owed) always answers `already-owned`, never a `fallback`, even when its order token could not be kept. The API issues a token for every start; a missing one means a misconfigured API, which the API reports itself.
+
+### The CSRF value
+
+`/session/end` and `/session/checkout` take a same-site POST only, carrying the CSRF value in the form. Both use one rule. The CSRF cookie is `HttpOnly`, so the page gets the value from the server:
+
+- **server mode:** `signOutToken(kit)` (Next) or `signOutFormToken(kit, req, res)` (Node), rendered into the page;
+- **client mode:** `/session/me`'s `signOutToken`.
+
+### What your return page reads
+
+Before it navigates, `startMemberCheckout` stores one record in `sessionStorage` under `storageKey(orderId)`:
+
+```json
+{ "orderId": "<24 hex>", "token": "<order read token>", "email": "", "coursePath": "/courses/x", "expiresAt": "<ISO time>", "member": true }
+```
+
+- `email` is always `""`: the kit stores no contact detail with a member's order.
+- `member: true` tells your return page this is a member's order, so it can skip the guest's "Log in with …" hint.
+- The return page confirms the payment and reads the order with `token`, exactly as for a guest. The token is never put in an address.
+
+## 8. What never to do
+
+- Never prefix a `ZWINGD_*` setting with `NEXT_PUBLIC_`, or send the client secret, the session token or the order token anywhere but where the kit sends them.
+- Never log a token, the client secret or the order token. The kit itself logs nothing.
+- Never take a return address from the browser. The kit always returns to `<origin>/checkout/return/<orderId>`.
+- Never send a price the page did not show. `expectedTotalMinor` is the member quote's `totalMinor`, unchanged.
+- Never start a hand-over on a page view. Only a click on "Log in" starts one.
+- Never show a sign-in form, or collect a password or a code, on your website.
+
 ## What the kit does for you
 
-- **Start:** `/session/start` always asks the app with `prompt=login`. The kit never runs a silent check.
 - **Callback:** the code is exchanged exactly once, and a failed exchange is never retried.
 - **Saved path:** the `next` path is checked against the contract's saved-path rule and its fixtures. Anything that is not a same-origin path becomes `/`.
 - **Cookies:** all three are `__Host-`, `HttpOnly` and `Secure`. Each removal also carries `Secure; Path=/`.
-- **Who is signed in, in the browser:** `/session/me` answers the name and the sign-out form value only, to same-origin requests only.
-- **Sign-out and member checkout:** `/session/end` and `/session/checkout` accept a same-site POST only, carrying the form's CSRF value: one rule for both (`sameSitePost`). Its cookies are cleared whatever the API answers, and the member is sent on to the app's sign-out.
-- **Session checks:** a check is cached for 60 seconds. The session is dropped only on `active: false`, never on a 429, a 503 or a timeout. Contact details are answered only from a check under 60 seconds old. Use `freshMember` before you prefill a checkout.
-- **Member checkout:** the server calls the API with the client secret and the session cookie's token (10 s for a quote, 30 s for a start). A start is never retried.
-- **Secrets:** no token, secret, verifier or code is ever logged, thrown or put in a URL beyond the contract's own redirects. The order token goes only to the browser that paid, which keeps it in sessionStorage.
+- **Sign-out:** the cookies are cleared whatever the API answers, and the member is sent on to the app's sign-out.
+- **Session checks:**
+  - a check is cached for 60 seconds;
+  - the session is dropped only on `active: false`, never on a 429, a 503 or a timeout;
+  - contact details are answered only from a check under 60 seconds old, so use `freshMember` / `getCheckoutMember` before a checkout prefill.
+- **Member checkout:** the server calls the API with the client secret and the session cookie's token, waiting 10 s for a quote and 30 s for a start.
 
-For local development against `http://localhost`, pass `insecureLocalCookies: true`. This uses unprefixed cookie names without `Secure`, and the kit refuses it when `NODE_ENV=production`.
+## Local development
+
+1. Set `ZWINGD_INSECURE_LOCAL_COOKIES=true` and `ZWINGD_SITE_ORIGIN=http://localhost:3100`.
+2. Have the platform team list that origin for the dev workspace.
+3. Run `pnpm --filter next-site dev`.
 
 ## Development
 
@@ -126,4 +231,8 @@ pnpm install
 pnpm -r type-check && pnpm -r test && pnpm -r build
 ```
 
-Releases: first run `pnpm -r test` with a `zwingd-backend` checkout beside this repo, so the saved-path fixtures test compares against the contract (CI cannot read the private repo and skips it). Then push a tag `vX.Y.Z`. The release workflow publishes every package after type-check, tests and build pass.
+**Releases:**
+1. Run `pnpm -r test` with a `zwingd-backend` checkout beside this repo, so the saved-path fixtures test compares against the contract. CI cannot read the private repo and skips it.
+2. Push a tag `vX.Y.Z`. The release workflow publishes every package after type-check, tests and build pass.
+
+The version bump and the publish are the operator's.

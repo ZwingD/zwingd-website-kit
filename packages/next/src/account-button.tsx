@@ -16,6 +16,7 @@
  *     JavaScript) with "Go to my account" (a full navigation to the app) and
  *     "Sign out" (a form POST to `/session/end` carrying the csrf value).
  */
+import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 
 import { useMemberState } from "./member-provider.tsx";
@@ -62,6 +63,21 @@ export function AccountButton(props: AccountButtonProps) {
   // header. A page that needs its query back passes `next`.
   const pathname = usePathname();
   const labels = { ...DEFAULT_ACCOUNT_LABELS, ...props.labels };
+  const trigger = useRef<HTMLElement>(null);
+  // kit #5 (Iris): a retry started from "Log in" that turns it into "My account"
+  // hands focus to "My account", so a keyboard user is not left on a removed element.
+  const refocus = useRef(false);
+  const retryFromLogIn = () => {
+    refocus.current = true;
+    retry();
+  };
+  useEffect(() => {
+    if (!member || !refocus.current) return;
+    refocus.current = false;
+    // Only when focus was lost with the removed link: never take it from where the visitor moved on to.
+    const active = typeof document === "undefined" ? null : document.activeElement;
+    if (!active || active === document.body || !active.isConnected) trigger.current?.focus();
+  }, [member]);
 
   // Client mode, before /session/me answers: an empty element of the same
   // class keeps the header's layout, so "Log in" never flashes for a member.
@@ -70,7 +86,7 @@ export function AccountButton(props: AccountButtonProps) {
   if (!member) {
     const next = props.next ?? pathname ?? "/";
     return (
-      <a className={props.logInClassName ?? props.className} href={`/session/start?next=${encodeURIComponent(next)}`} onFocus={retry} onClick={retry}>
+      <a className={props.logInClassName ?? props.className} href={`/session/start?next=${encodeURIComponent(next)}`} onFocus={retryFromLogIn} onClick={retryFromLogIn}>
         {labels.logIn}
       </a>
     );
@@ -78,7 +94,9 @@ export function AccountButton(props: AccountButtonProps) {
 
   return (
     <details className={props.className}>
-      <summary className={props.triggerClassName}>{labels.myAccount}</summary>
+      <summary ref={trigger} className={props.triggerClassName}>
+        {labels.myAccount}
+      </summary>
       <div className={props.menuClassName}>
         <a className={props.itemClassName} href={`${appUrl}/`}>
           {labels.goToMyAccount}

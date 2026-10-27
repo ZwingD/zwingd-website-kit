@@ -111,8 +111,13 @@ export async function startMemberCheckout(offer: string, options: StartMemberChe
   if (!isAnswer(answer)) return unavailable();
   if (answer.kind !== "redirect") return answer;
 
+  // kit #5: a settled order is the member's now. Whatever happens to its token,
+  // the answer is `already-owned`, never a fallback that would offer guest
+  // checkout to an owner. (The API answers a token for every start; none means
+  // a misconfigured API, which it reports itself.)
+  const owned = (): StartMemberCheckoutResult => ({ kind: "already-owned" });
   // The return page needs the order token: without it stored, the buyer is not sent on.
-  if (!answer.orderToken) return { kind: "fallback", reason: "storage-unavailable" };
+  if (!answer.orderToken) return answer.settled === true ? owned() : { kind: "fallback", reason: "storage-unavailable" };
   const record: StoredMemberCheckout = {
     orderId: answer.orderId,
     token: answer.orderToken,
@@ -123,10 +128,10 @@ export async function startMemberCheckout(offer: string, options: StartMemberChe
   };
   try {
     const storage = options.storage === undefined ? defaultStorage() : options.storage;
-    if (!storage) return { kind: "fallback", reason: "storage-unavailable" };
+    if (!storage) return answer.settled === true ? owned() : { kind: "fallback", reason: "storage-unavailable" };
     storage.setItem(options.storageKey(answer.orderId), JSON.stringify(record));
   } catch {
-    return { kind: "fallback", reason: "storage-unavailable" };
+    return answer.settled === true ? owned() : { kind: "fallback", reason: "storage-unavailable" };
   }
 
   const navigate = options.navigate ?? ((url: string) => (globalThis as { location?: { assign(u: string): void } }).location?.assign(url));
