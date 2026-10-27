@@ -17,3 +17,26 @@ export type { CookieNames } from "./cookies.ts";
 export { CHECK_CACHE_MS } from "./member.ts";
 export type { MemberCheck, MemberContact, MemberSummary } from "./member.ts";
 export type { HandoverMember } from "./api-client.ts";
+// Member checkout (session hand-over v1.1).
+export {
+  CHECKOUT_ATTRIBUTION_KEYS,
+  CHECKOUT_PATH,
+  CHECKOUT_QUOTE_TIMEOUT_MS,
+  CHECKOUT_RETURN_PATH,
+  CHECKOUT_START_TIMEOUT_MS,
+  createMemberCheckout,
+} from "./checkout.ts";
+export type {
+  CheckoutAttribution,
+  CheckoutFallbackReason,
+  CheckoutResponseView,
+  MemberCheckout,
+  MemberCheckoutAnswer,
+  MemberCheckoutOptions,
+  MemberQuote,
+  MemberQuoteCheck,
+  VisitorCountryResolver,
+} from "./checkout.ts";
+export { startMemberCheckout } from "./browser.ts";
+export { sameSitePost } from "./same-site.ts";
+export type { CheckoutStorage, StartMemberCheckoutOptions, StartMemberCheckoutResult, StoredMemberCheckout } from "./browser.ts";

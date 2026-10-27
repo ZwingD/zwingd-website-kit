@@ -29,12 +29,13 @@ import {
 } from "./cookies.ts";
 import { createMemberReader, type MemberCheck, type MemberReader } from "./member.ts";
 import { base64url, codeChallenge, randomToken, STATE_LENGTH, STATE_PATTERN, VERIFIER_LENGTH, VERIFIER_PATTERN } from "./pkce.ts";
+import { CSRF_VALUE, header, sameSitePost } from "./same-site.ts";
 import { savedPath } from "./saved-path.ts";
 
 export const SESSION_PATHS = Object.freeze({ start: "/session/start", callback: "/session/callback", end: "/session/end", me: "/session/me" });
 
-/** The form field the sign-out form carries the CSRF value in. */
-export const CSRF_FIELD = "csrf";
+/** The form field the sign-out form carries the CSRF value in (same-site.ts owns the rule). */
+export { CSRF_FIELD } from "./same-site.ts";
 /** A CSRF cookie minted outside a sign-in, where the session's expiry is not known. */
 export const CSRF_COOKIE_MAX_AGE_S = 24 * 60 * 60;
 
@@ -67,7 +68,6 @@ export interface SessionMe {
 }
 
 const CODE = /^[0-9a-f]{64}$/;
-const CSRF_VALUE = /^[A-Za-z0-9\-._~]{32,128}$/;
 
 const baseHeaders = (): Record<string, string> => ({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
 const redirect = (status: 302 | 303, location: string, setCookies: string[]): ResponseView => ({
@@ -100,13 +100,6 @@ function decodeStart(raw: string | undefined): StartState | null {
   }
 }
 
-/** Header lookup that tolerates any casing an adapter hands in. */
-function header(req: RequestView, name: string): string | undefined {
-  const direct = req.headers[name];
-  if (direct !== undefined) return direct;
-  const key = Object.keys(req.headers).find((k) => k.toLowerCase() === name);
-  return key === undefined ? undefined : req.headers[key];
-}
 
 export interface WebsiteKit extends MemberReader {
   readonly config: WebsiteKitConfig;
@@ -195,16 +188,8 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
     ]);
   }
 
-  /** A same-site POST: no cross-site Origin / Sec-Fetch-Site, AND the Strict cookie's value in the form. */
-  function sameSiteForm(req: RequestView): boolean {
-    const origin = header(req, "origin");
-    if (origin !== undefined && origin !== config.origin) return false;
-    const site = header(req, "sec-fetch-site");
-    if (site !== undefined && site !== "same-origin") return false;
-    const cookie = req.cookies[names.csrf];
-    const sent = req.form?.[CSRF_FIELD];
-    return typeof cookie === "string" && CSRF_VALUE.test(cookie) && sent === cookie;
-  }
+  /** The kit's one same-site POST rule (same-site.ts), also behind /session/checkout. */
+  const sameSiteForm = (req: RequestView): boolean => sameSitePost(req, { origin: config.origin, csrfCookie: names.csrf });
 
   async function end(req: RequestView): Promise<ResponseView> {
     // A GET never ends anything.

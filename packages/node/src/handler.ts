@@ -10,7 +10,16 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { parseCookieHeader, type MemberCheck, type RequestView, type ResponseView, type WebsiteKit } from "@zwingd-ce/website-kit";
+import {
+  CHECKOUT_PATH,
+  parseCookieHeader,
+  type CheckoutResponseView,
+  type MemberCheck,
+  type MemberCheckout,
+  type RequestView,
+  type ResponseView,
+  type WebsiteKit,
+} from "@zwingd-ce/website-kit";
 
 const FORM_LIMIT_BYTES = 8 * 1024;
 
@@ -62,13 +71,26 @@ export function writeResponse(res: ServerResponse, view: ResponseView): void {
   res.end(view.body);
 }
 
+/** Write the member checkout's JSON answer (a core view with a body). */
+function writeCheckoutResponse(res: ServerResponse, view: CheckoutResponseView): void {
+  res.statusCode = view.status;
+  for (const [name, value] of Object.entries(view.headers)) res.setHeader(name, value);
+  if (view.setCookies.length > 0) res.setHeader("Set-Cookie", view.setCookies);
+  res.end(view.body);
+}
+
 const SESSION_PREFIX = "/session/";
+
+export interface SessionHandlerOptions {
+  /** Serve `POST /session/checkout` (member checkout) with this; without it the path is the site's. */
+  checkout?: MemberCheckout;
+}
 
 /**
  * Serves `/session/start`, `/session/callback`, `/session/end` and `/session/me`; any other
  * path goes to `next` (Express), or answers 404 when there is none.
  */
-export function createSessionHandler(kit: WebsiteKit) {
+export function createSessionHandler(kit: WebsiteKit, options: SessionHandlerOptions = {}) {
   return async function sessionHandler(req: IncomingMessage, res: ServerResponse, next?: Next): Promise<void> {
     const path = new URL(req.url ?? "/", kit.config.origin).pathname;
     if (!path.startsWith(SESSION_PREFIX)) {
@@ -78,6 +100,9 @@ export function createSessionHandler(kit: WebsiteKit) {
       return;
     }
     try {
+      if (path === CHECKOUT_PATH && options.checkout) {
+        return writeCheckoutResponse(res, await options.checkout.checkout(await toRequestView(req, kit.config.origin)));
+      }
       const view = await kit.handle(await toRequestView(req, kit.config.origin));
       if (view) return writeResponse(res, view);
       if (next) return next();

@@ -33,7 +33,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "test": "node --test --experimental-strip-types --conditions=@zwingd-ce/source 'test/**/*.test.ts'",
+    "test": "node --test --test-force-exit --experimental-strip-types --conditions=@zwingd-ce/source --import ./test/tsx-loader.mjs 'test/**/*.test.ts'",
     "type-check": "tsc --noEmit",
     "prepublishOnly": "pnpm build && pnpm test && pnpm type-check"
   },

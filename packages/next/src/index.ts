@@ -7,4 +7,5 @@
  *   "@zwingd-ce/website-kit-next/client"  AccountButton, MemberProvider, useMember
  */
 export { createSessionRoutes, toRequestView, toResponse } from "./routes.ts";
+export type { SessionRoutesOptions } from "./routes.ts";
 export * from "@zwingd-ce/website-kit";
