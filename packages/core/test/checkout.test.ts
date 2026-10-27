@@ -150,7 +150,7 @@ test("cross-site requests and a missing or wrong CSRF value are 403 with the sam
 
 test("a malformed request is 400 and asks nothing", async () => {
   const { api, checkout } = setup({});
-  for (const bad of [{ offer: "not-an-id" }, { offer: "" }, { expectedTotalMinor: "12.50" }, { expectedTotalMinor: "" }]) {
+  for (const bad of [{ offer: "not-an-id" }, { offer: "" }, { expectedTotalMinor: "12.50" }, { expectedTotalMinor: "" }] as Record<string, string>[]) {
     const res = await checkout.checkout(post({ form: form(bad) }));
     assert.equal(res.status, 400);
     assert.deepEqual(answerOf(res), { kind: "fallback", reason: "invalid-request" });

@@ -64,7 +64,7 @@ test("posts a same-origin form to /session/checkout with the CSRF value; no retu
     navigate: () => undefined,
   });
   assert.equal(site.calls.length, 1);
-  const [{ url, init }] = site.calls;
+  const { url, init } = site.calls[0]!;
   assert.equal(url, "/session/checkout");
   assert.equal(init.method, "POST");
   assert.equal(init.credentials, "same-origin");

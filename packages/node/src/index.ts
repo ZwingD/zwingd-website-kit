@@ -4,4 +4,5 @@
  * package.
  */
 export { createSessionHandler, freshMember, getMember, signOutFormToken, toRequestView, writeResponse } from "./handler.ts";
+export type { SessionHandlerOptions } from "./handler.ts";
 export * from "@zwingd-ce/website-kit";
