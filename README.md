@@ -33,7 +33,7 @@ It implements [session hand-over v1](https://github.com/ZwingD/zwingd-backend/bl
      <header>… <AccountButton className="…" menuClassName="…" itemClassName="…" /></header>
    </MemberProvider>
    ```
-   `AccountButton` is unstyled. Give it your own classes and labels (`labels={{ logIn: "Sign in" }}`).
+   `AccountButton` is unstyled. Give it your own labels (`labels={{ logIn: "Sign in" }}`) and a class on every part it draws: `className` (the root), `loadingClassName` (the placeholder), `logInClassName` (the "Log in" link), `triggerClassName` ("My account"), `menuClassName`, `itemClassName` (each menu item), `signOutFormClassName` and `signOutClassName` (the sign-out form and its button). A part with no class of its own uses `className`, or `itemClassName` for the sign-out button.
 
    **Cached or static pages:** use client mode instead. The browser reads `GET /session/me` once when the page loads, and the server-side read stays out of the page:
    ```tsx
@@ -41,14 +41,25 @@ It implements [session hand-over v1](https://github.com/ZwingD/zwingd-backend/bl
      <header>… <AccountButton className="…" /></header>
    </MemberProvider>
    ```
-   Until the answer arrives, `useMember()` is null and `AccountButton` renders an empty element with your class, so a member never sees "Log in" flash. `/session/me` answers `{ member: { firstName?, lastName? } | null, signOutToken }` with `Cache-Control: no-store`. It refuses cross-site reads, goes through the 60-second check cache, and clears the session cookie when the session has ended.
+   Until the answer arrives, `useMember()` is null and `AccountButton` renders an empty element with your class, so a member never sees "Log in" flash. The read gives up after about 5 seconds and shows "Log in", so a slow API never leaves the header empty; it asks again only when the visitor next focuses or clicks the button, never on a timer. `/session/me` answers `{ member: { firstName?, lastName? } | null, signOutToken }` with `Cache-Control: no-store`. It refuses cross-site reads, goes through the 60-second check cache, and clears the session cookie when the session has ended.
 4. **`.env.example`**: the five server settings. Never prefix them `NEXT_PUBLIC_`.
 
 **Rules the kit already keeps for you:**
 - A plain page view never contacts the app. Only a click on "Log in" starts a hand-over.
 - `getMember` returns the name only.
 - For a checkout prefill, use `getCheckoutMember`. It makes a fresh check and returns an email or phone only when that check succeeded.
-- A member's Buy Now that goes straight to payment arrives with the member checkout routes (KIT-3). Until then, Buy Now stays your existing guest checkout.
+- A member's Buy Now goes straight to payment through member checkout (below). A visitor who is not signed in keeps your guest checkout.
+
+**Member checkout** (session hand-over v1.1): a member signed in on your website buys with one click, no pop-up and no email to type.
+1. In `lib/zwingd.ts`, make one `createMemberCheckout(zwingd(), { visitorCountry })`. `visitorCountry(request)` returns the visitor's master-data country id from your host's geo header (the example maps `x-vercel-ip-country` through `ZWINGD_COUNTRY_IDS`), or null. The country never comes from the request body.
+2. Pass it to the routes: `createSessionRoutes(zwingd(), { checkout: memberCheckout() })`. They then also serve `POST /session/checkout`.
+3. On the course page (a Server Component), read the member's own price with `getMemberQuote(memberCheckout(), offer, { visitorCountry })` and show its `totalMinor`. That is the price a start charges.
+4. The Buy Now button (a Client Component) calls `startMemberCheckout(offer, { csrf, expectedTotalMinor: quote.totalMinor, paymentGateway: quote.gateways[0]?.paymentGateway, storageKey })`. `csrf` is the sign-out value (`signOutToken(kit)`, or `/session/me`'s `signOutToken`); `storageKey(orderId)` is the sessionStorage key your return page reads.
+   - `redirect`: the order token is stored (`{ orderId, token, email: "", coursePath, expiresAt, member: true }`) and the browser goes to payment, then back to `<origin>/checkout/return/<orderId>`. The return address is always that page, never one from the browser.
+   - `already-owned`: show "You already have this course".
+   - `fallback`: use your guest checkout. `reason` says why: `signed-out`, `not-available` (an API without member checkout), `checkout-disabled`, `price-changed` (with the new `quote` to show; nothing is started at a price the page did not show), `refused`, `unavailable` or `storage-unavailable`.
+
+`examples/next-site` has it all: `app/courses/[offer]/page.tsx`, `components/buy-now.tsx` and `app/checkout/return/[orderId]/page.tsx`.
 
 **Local development:**
 1. Set `ZWINGD_INSECURE_LOCAL_COOKIES=true` and `ZWINGD_SITE_ORIGIN=http://localhost:3100`.
@@ -78,7 +89,8 @@ import { configFromEnv, createSessionHandler, createWebsiteKit, getMember, signO
 const kit = createWebsiteKit(configFromEnv(process.env));
 const app = express();
 
-// Serves GET /session/start, GET /session/callback, POST /session/end and GET /session/me.
+// Serves GET /session/start, GET /session/callback, POST /session/end and GET /session/me,
+// and with { checkout: createMemberCheckout(kit, { visitorCountry }) } also POST /session/checkout.
 app.use(createSessionHandler(kit));
 
 app.get("/", async (req, res) => {
@@ -100,9 +112,10 @@ app.get("/", async (req, res) => {
 - **Saved path:** the `next` path is checked against the contract's saved-path rule and its fixtures. Anything that is not a same-origin path becomes `/`.
 - **Cookies:** all three are `__Host-`, `HttpOnly` and `Secure`. Each removal also carries `Secure; Path=/`.
 - **Who is signed in, in the browser:** `/session/me` answers the name and the sign-out form value only, to same-origin requests only.
-- **Sign-out:** `/session/end` accepts a same-site POST only, carrying the form's CSRF value. Its cookies are cleared whatever the API answers, and the member is sent on to the app's sign-out.
+- **Sign-out and member checkout:** `/session/end` and `/session/checkout` accept a same-site POST only, carrying the form's CSRF value: one rule for both (`sameSitePost`). Its cookies are cleared whatever the API answers, and the member is sent on to the app's sign-out.
 - **Session checks:** a check is cached for 60 seconds. The session is dropped only on `active: false`, never on a 429, a 503 or a timeout. Contact details are answered only from a check under 60 seconds old. Use `freshMember` before you prefill a checkout.
-- **Secrets:** no token, secret, verifier or code is ever logged, thrown or put in a URL beyond the contract's own redirects.
+- **Member checkout:** the server calls the API with the client secret and the session cookie's token (10 s for a quote, 30 s for a start). A start is never retried.
+- **Secrets:** no token, secret, verifier or code is ever logged, thrown or put in a URL beyond the contract's own redirects. The order token goes only to the browser that paid, which keeps it in sessionStorage.
 
 For local development against `http://localhost`, pass `insecureLocalCookies: true`. This uses unprefixed cookie names without `Secure`, and the kit refuses it when `NODE_ENV=production`.
 
