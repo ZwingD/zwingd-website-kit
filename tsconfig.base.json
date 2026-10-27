@@ -15,6 +15,6 @@
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": false,
     "resolveJsonModule": true,
-    "customConditions": ["development"]
+    "customConditions": ["@zwingd-ce/source"]
   }
 }

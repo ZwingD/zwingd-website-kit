@@ -29,6 +29,8 @@ jobs:
       - run: pnpm -r type-check
       - run: pnpm -r test
       - run: pnpm -r build
+      # Published packages import from a clean consumer, plain and under `development`.
+      - run: bash scripts/pack-check.sh
       # `workspace:^` becomes the core's real version range when published.
       - run: pnpm -r publish --access public --no-git-checks
         env:

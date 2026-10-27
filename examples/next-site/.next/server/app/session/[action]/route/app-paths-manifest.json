@@ -1,0 +1,3 @@
+{
+  "/session/[action]/route": "app/session/[action]/route.js"
+}

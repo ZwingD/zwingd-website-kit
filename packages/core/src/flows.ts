@@ -148,8 +148,10 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
     const params = new URL(req.url, config.origin).searchParams;
     const saved = decodeStart(req.cookies[names.start]);
     const state = params.get("state");
-    // No start cookie, or a state that is not ours: refuse (a redirect home, nothing rendered).
-    if (!saved || state === null || state !== saved.state) return redirect(303, "/", [clearStart()]);
+    // No start cookie, or a state that is not ours: refuse (a redirect home,
+    // nothing rendered). The start cookie is kept, so a forged callback cannot
+    // break an honest sign-in that is still in progress.
+    if (!saved || state === null || state !== saved.state) return redirect(303, "/", []);
 
     // `login_required`, `temporarily_unavailable` or anything else: carry on signed out.
     if (params.has("error")) return redirect(303, saved.path, [clearStart()]);
