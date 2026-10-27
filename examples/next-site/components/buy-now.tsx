@@ -14,7 +14,8 @@ export function BuyNow(props: { offer: string; csrf: string; expectedTotalMinor:
 
   async function buy() {
     setBusy(true);
-    setNote(null);
+    // The status line always has text when it is drawn: never an empty live region.
+    setNote("Taking you to payment…");
     const result = await startMemberCheckout(props.offer, {
       csrf: props.csrf,
       expectedTotalMinor: props.expectedTotalMinor,
@@ -22,7 +23,7 @@ export function BuyNow(props: { offer: string; csrf: string; expectedTotalMinor:
       storageKey: orderStorageKey,
       coursePath: window.location.pathname,
     });
-    if (result.kind === "redirect") return; // on its way to payment
+    if (result.kind === "redirect") return; // on its way to payment; the line keeps saying so
     setBusy(false);
     if (result.kind === "already-owned") setNote("You already have this course.");
     else if (result.reason === "price-changed") setNote("The price has changed. Reload the page to see the new price.");
