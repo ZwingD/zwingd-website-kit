@@ -67,4 +67,4 @@ pnpm install
 pnpm -r type-check && pnpm -r test && pnpm -r build
 ```
 
-Releases: push a tag `vX.Y.Z`. The release workflow publishes every package after type-check, tests and build pass.
+Releases: first run `pnpm -r test` with a `zwingd-backend` checkout beside this repo, so the saved-path fixtures test compares against the contract (CI cannot read the private repo and skips it). Then push a tag `vX.Y.Z`. The release workflow publishes every package after type-check, tests and build pass.
