@@ -1,0 +1,12 @@
+node_modules
+dist
+*.tsbuildinfo
+.npmrc
+.env
+.env.local
+.DS_Store
+coverage
+.vscode
+.idea
+.next
+next-env.d.ts

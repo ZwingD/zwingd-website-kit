@@ -1,0 +1,35 @@
+{
+  "source": "ZwingD/zwingd-backend docs/storefront-api/session-handover-v1.md, section \"The saved path\", at develop e7dc45d1c",
+  "accepted": [
+    "/",
+    "/checkout",
+    "/courses/project-management",
+    "/courses/project-management?ref=header&tab=2",
+    "/account#orders",
+    "/a/b/c/",
+    "/search?q=a%2Fb",
+    "/events/2026/annual-meet?next=/checkout"
+  ],
+  "refused": [
+    "",
+    "checkout",
+    "./checkout",
+    " /checkout",
+    "//evil.example",
+    "//evil.example/checkout",
+    "///evil.example",
+    "/\\evil.example",
+    "\\\\evil.example",
+    "/checkout\\..\\admin",
+    "https://evil.example",
+    "https://evil.example/checkout",
+    "https:/evil.example",
+    "javascript:alert(1)",
+    "data:text/html,x",
+    "/\t/evil.example",
+    "/check\nout",
+    "/check\rout",
+    "/checkout\u0000",
+    "/checkout\u007f"
+  ]
+}

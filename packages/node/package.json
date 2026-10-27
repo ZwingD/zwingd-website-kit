@@ -1,0 +1,56 @@
+{
+  "name": "@zwingd-ce/website-kit-node",
+  "version": "0.1.0",
+  "description": "Node http / Express adapter of the Zwingd website kit: the three /session/* routes and getMember for a plain (req, res) server.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "@zwingd-ce/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "node --test --experimental-strip-types --conditions=@zwingd-ce/source 'test/**/*.test.ts'",
+    "type-check": "tsc --noEmit",
+    "prepublishOnly": "pnpm build && pnpm test && pnpm type-check"
+  },
+  "dependencies": {
+    "@zwingd-ce/website-kit": "workspace:^"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "express": "^5.1.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.5.0"
+  },
+  "keywords": [
+    "zwingd",
+    "session",
+    "express",
+    "node"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZwingD/zwingd-website-kit.git",
+    "directory": "packages/node"
+  },
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
