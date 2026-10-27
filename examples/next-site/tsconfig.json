@@ -10,6 +10,7 @@
     "noEmit": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
     "customConditions": [
       "@zwingd-ce/source"
     ],
