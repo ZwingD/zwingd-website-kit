@@ -35,6 +35,7 @@ export const SESSION_PATHS = Object.freeze({ start: "/session/start", callback: 
 
 /** The form field the sign-out form carries the CSRF value in. */
 export const CSRF_FIELD = "csrf";
+/** A CSRF cookie minted outside a sign-in, where the session's expiry is not known. */
 export const CSRF_COOKIE_MAX_AGE_S = 24 * 60 * 60;
 
 export interface RequestView {
@@ -186,7 +187,10 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
     await members.remember(res.body.sessionToken, res.body.member);
     return redirect(303, saved.path, [
       serializeCookie(names.session, res.body.sessionToken, { sameSite: "Lax", maxAge, expires: expiresAt }, local),
-      serializeCookie(names.csrf, randomToken(43), { sameSite: "Strict", maxAge: Math.min(maxAge, CSRF_COOKIE_MAX_AGE_S) }, local),
+      // The sign-out value lives as long as the session it signs out (a code-only
+      // workspace keeps members 30 days): a shorter one leaves a server-fed page
+      // with "My account" and no Sign out.
+      serializeCookie(names.csrf, randomToken(43), { sameSite: "Strict", maxAge, expires: expiresAt }, local),
       clearStart(),
     ]);
   }
@@ -246,7 +250,7 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
     const setCookies: string[] = [];
     const answer: SessionMe = { member: null, signOutToken: null };
     if (check.status === "ended") {
-      setCookies.push(clearSession());
+      setCookies.push(clearSession(), clearCsrf());
     } else if (check.status === "signed-in") {
       const m = check.member;
       answer.member = { ...(m?.firstName ? { firstName: m.firstName } : {}), ...(m?.lastName ? { lastName: m.lastName } : {}) };

@@ -274,6 +274,7 @@ test("me: active false answers null and clears the session cookie", async () => 
   const res = await kit.me(req({ url: `${ORIGIN}/session/me`, cookies: signedInCookies("c".repeat(43)) }));
   assert.deepEqual(JSON.parse(res.body!), { member: null, signOutToken: null });
   assert.match(cookieNamed(res.setCookies, "__Host-zw_session")!, /Max-Age=0/);
+  assert.match(cookieNamed(res.setCookies, "__Host-zw_csrf")!, /Max-Age=0/);
 });
 
 test("me: a 503 keeps the member signed in, with no name yet", async () => {
@@ -309,4 +310,16 @@ test("me: POST is 405, HEAD has no body", async () => {
   const head = await kit.me(req({ method: "HEAD", url: `${ORIGIN}/session/me` }));
   assert.equal(head.status, 200);
   assert.equal(head.body, undefined);
+});
+
+test("callback: the CSRF cookie lives as long as the session, a 30-day one included", async () => {
+  const expires = new Date(NOW + 30 * 24 * 60 * 60 * 1000).toISOString();
+  const { kit } = kitWith({ exchange: { status: 200, body: { sessionToken: TOKEN, expiresAt: expires, member: MEMBER } } });
+  const { cookies, state } = await started(kit);
+  const res = await kit.callback(req({ url: callbackUrl({ code: CODE, state }), cookies }));
+  const session = cookieNamed(res.setCookies, "__Host-zw_session")!;
+  const csrf = cookieNamed(res.setCookies, "__Host-zw_csrf")!;
+  assert.match(csrf, /Max-Age=2592000/);
+  assert.equal(csrf.match(/Max-Age=\d+/)![0], session.match(/Max-Age=\d+/)![0]);
+  assert.equal(csrf.match(/Expires=[^;]+/)![0], session.match(/Expires=[^;]+/)![0]);
 });

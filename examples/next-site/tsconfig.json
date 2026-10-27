@@ -10,6 +10,9 @@
     "noEmit": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "customConditions": [
+      "@zwingd-ce/source"
+    ],
     "jsx": "react-jsx",
     "esModuleInterop": true,
     "skipLibCheck": true,
