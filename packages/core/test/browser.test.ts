@@ -184,7 +184,7 @@ test("kit #5: a settled order with no order token is already-owned, never a fall
     storage: memoryStorage().storage,
     navigate: () => void (navigated = true),
   });
-  assert.deepEqual(result, { kind: "already-owned" });
+  assert.deepEqual(result, { kind: "already-owned", settled: true });
   assert.equal(navigated, false);
 });
 
@@ -197,7 +197,7 @@ test("kit #5: a settled order whose token cannot be stored is already-owned too"
     storage: memoryStorage(true).storage,
     navigate: () => assert.fail("navigated"),
   });
-  assert.deepEqual(result, { kind: "already-owned" });
+  assert.deepEqual(result, { kind: "already-owned", settled: true });
 });
 
 test("kit #5: a settled order with its token is stored and followed to the site's return page", async () => {

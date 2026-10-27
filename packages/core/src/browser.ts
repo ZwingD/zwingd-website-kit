@@ -115,7 +115,7 @@ export async function startMemberCheckout(offer: string, options: StartMemberChe
   // the answer is `already-owned`, never a fallback that would offer guest
   // checkout to an owner. (The API answers a token for every start; none means
   // a misconfigured API, which it reports itself.)
-  const owned = (): StartMemberCheckoutResult => ({ kind: "already-owned" });
+  const owned = (): StartMemberCheckoutResult => ({ kind: "already-owned", settled: true });
   // The return page needs the order token: without it stored, the buyer is not sent on.
   if (!answer.orderToken) return answer.settled === true ? owned() : { kind: "fallback", reason: "storage-unavailable" };
   const record: StoredMemberCheckout = {

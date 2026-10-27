@@ -7,6 +7,7 @@ The next tag is v0.2.0 (the operator's).
 - `startMemberCheckout`: an order that settled at once (nothing owed) is `already-owned` when its order token cannot be kept, never a `fallback` that would offer guest checkout to an owner. The redirect answer gains `settled` (#5).
 - `AccountButton`: when a client-mode retry turns a focused "Log in" into "My account", focus moves to "My account" (#5).
 - Example site: the Buy now status line always has text when it is drawn (#5).
+- `already-owned` carries `settled: true` when this start's order settled just now, so a site can say "This course is yours now." (the example does; Iris on #6).
 - README: a full guide for website teams (install, settings, workspace set-up, routes, server and client mode, member checkout, the CSRF value, the return page record, what never to do).
 
 ## 0.1.0

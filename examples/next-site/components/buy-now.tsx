@@ -25,7 +25,8 @@ export function BuyNow(props: { offer: string; csrf: string; expectedTotalMinor:
     });
     if (result.kind === "redirect") return; // on its way to payment; the line keeps saying so
     setBusy(false);
-    if (result.kind === "already-owned") setNote("You already have this course.");
+    // Iris on #6: a zero-total order that settled just now reads as the buyer's new course.
+    if (result.kind === "already-owned") setNote(result.settled ? "This course is yours now." : "You already have this course.");
     else if (result.reason === "price-changed") setNote("The price has changed. Reload the page to see the new price.");
     else setNote("Member checkout isn't available right now. Use the guest checkout instead.");
   }
