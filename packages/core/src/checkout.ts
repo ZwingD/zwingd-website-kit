@@ -83,7 +83,8 @@ export type MemberCheckoutAnswer =
        */
       settled: boolean;
     }
-  | { kind: "already-owned" }
+  /** `settled`: this start's order settled at once (a zero total), so it is the member's just now. */
+  | { kind: "already-owned"; settled?: true }
   | { kind: "fallback"; reason: CheckoutFallbackReason; refusal?: string; quote?: MemberQuote };
 
 export type MemberQuoteCheck =
