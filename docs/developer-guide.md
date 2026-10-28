@@ -202,7 +202,7 @@ The code step creates **no account and no session**. A right code gives your ser
 3. **On, signed in:** skip the code step and use member Buy Now (section 7).
 4. **On, signed out:** email → code → payment. Use `useCodeStep({ offer, expectedTotalMinor, storageKey, terms })` and draw the step with `CODE_STEP_COPY`. `expectedTotalMinor` is the guest total your pop-up showed.
 5. **After the code** the kit re-quotes with the proof. The same total goes straight to payment ("Taking you to payment…"). A different total (a member's price) shows "Your member price is {amount}." and a "Pay {amount}" button (`step.priceLine`, `step.payLabel`, `step.pay()`).
-6. **Return page:** on the server, `getCheckoutContinue(kit)` answers the button, "Continue sign-up" (a new buyer) or "Go to my course" (a member), or `null` without a proof. Draw it with `<CheckoutContinueButton next={next} />`. Its press is a form POST to the kit, which mints a one-time code for the app at that moment and sends the buyer on with another form POST. When it is `null`, show your usual course link.
+6. **Return page:** on the server, `getCheckoutContinue(kit)` answers the button, "Continue sign-up" (a new buyer) or "Go to my course" (a member), or `null` without a proof. Draw it with `<CheckoutContinueButton next={next} />`. One press: the button asks the kit's server, which mints a one-time code for the app at that moment (never on the page load), then sends the buyer on to the app with a form POST carrying it. The code never goes into an address, storage or a log, and the app asks "Continue as {email}" before signing in. If anything is wrong, the press opens the app's normal sign-in. When it is `null`, show your usual course link.
 
 The code step's rules:
 

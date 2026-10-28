@@ -42,7 +42,7 @@ export { sameSitePost } from "./same-site.ts";
 export type { CheckoutStorage, StartMemberCheckoutOptions, StartMemberCheckoutResult, StoredMemberCheckout } from "./browser.ts";
 // Checkout v3.2: the code step before payment and the thank-you continue (v0.2.0).
 export { CODE_PATHS } from "./code-routes.ts";
-export type { CheckoutContinue, CodeStepRead } from "./code-routes.ts";
+export type { CheckoutContinue, CheckoutContinueAnswer, CodeStepRead } from "./code-routes.ts";
 export {
   CODE_STEP_COPY,
   codeStepAnnouncement,

@@ -394,8 +394,8 @@ test("GET /session/code-step: a form value for a signed-out visitor, and the ope
 
 test("checkoutContinueFor: the server reads checkout-proof/context and gives the label only; no nonce is minted", async () => {
   const { kit, calls } = setup({ "checkout-proof/context": [{ status: 200, body: { continueAs: "sign-up", proofExpiresInSeconds: 1500 } }, { status: 200, body: { continueAs: "member", proofExpiresInSeconds: 1500 } }] });
-  assert.deepEqual(await kit.checkoutContinueFor({ "__Host-zw_proof": PROOF }), { continueAs: "sign-up", label: "Continue sign-up", action: "/session/checkout-continue" });
-  assert.deepEqual(await kit.checkoutContinueFor({ "__Host-zw_proof": PROOF }), { continueAs: "member", label: "Go to my course", action: "/session/checkout-continue" });
+  assert.deepEqual(await kit.checkoutContinueFor({ "__Host-zw_proof": PROOF }), { continueAs: "sign-up", label: "Continue sign-up", action: "/session/checkout-continue", signInUrl: `${APP}/` });
+  assert.deepEqual(await kit.checkoutContinueFor({ "__Host-zw_proof": PROOF }), { continueAs: "member", label: "Go to my course", action: "/session/checkout-continue", signInUrl: `${APP}/` });
   assert.deepEqual(calls.map((c) => c.call), ["checkout-proof/context", "checkout-proof/context"]);
   assert.deepEqual(calls[0]!.body, { realm: "acme", origin: ORIGIN, proof: PROOF });
   assert.equal(await kit.checkoutContinueFor({}), null);
@@ -407,52 +407,40 @@ test("checkoutContinueFor: an invalid or expired proof is null", async () => {
   assert.equal(await kit.checkoutContinueFor({ "__Host-zw_proof": PROOF }), null);
 });
 
-test("A3: the press mints the nonce and answers a script-free form POST to the app; the nonce is never in a URL", async () => {
-  const { kit, calls } = setup({
-    "checkout-proof/context": { status: 200, body: { continueAs: "sign-up", proofExpiresInSeconds: 1500 } },
-    "checkout-proof/continue": { status: 200, body: { nonce: NONCE, nonceExpiresInSeconds: 60, continueUrl: CONTINUE_URL } },
-  });
-  const res = (await kit.handle(post("/session/checkout-continue", {}, { "__Host-zw_proof": PROOF })))!;
+test("A3: the press mints the nonce and answers { nonce, continueUrl } as JSON, no-store; never the proof", async () => {
+  const { kit, calls } = setup({ "checkout-proof/continue": { status: 200, body: { nonce: NONCE, nonceExpiresInSeconds: 60, continueUrl: CONTINUE_URL, extra: "x" } } });
+  const res = (await kit.handle(post("/session/checkout-continue", {}, { "__Host-zw_proof": PROOF }, { accept: "application/json" })))!;
   assert.equal(res.status, 200);
-  assert.match(res.headers["Content-Type"]!, /^text\/html/);
+  assert.match(res.headers["Content-Type"]!, /^application\/json/);
   assert.equal(res.headers["Cache-Control"], "no-store");
   assert.equal(res.headers["Referrer-Policy"], "no-referrer");
-  assert.match(res.headers["Content-Security-Policy"]!, /default-src 'none'/);
-  assert.match(res.headers["Content-Security-Policy"]!, new RegExp(`form-action ${APP}`));
-  assert.match(res.headers["Content-Security-Policy"]!, /frame-ancestors 'none'/);
-  const html = res.body!;
-  assert.ok(html.includes(`<form method="post" action="${CONTINUE_URL}">`));
-  assert.ok(html.includes(`<input type="hidden" name="nonce" value="${NONCE}">`));
-  assert.ok(html.includes(`<button type="submit" autofocus>Continue sign-up</button>`));
-  assert.ok(!/<script/i.test(html), "nothing auto-submits");
-  assert.ok(!html.includes(PROOF));
+  assert.deepEqual(JSON.parse(res.body!), { nonce: NONCE, continueUrl: CONTINUE_URL });
+  assert.ok(!res.body!.includes(PROOF));
   assert.equal(res.headers.Location, undefined);
-  assert.deepEqual(calls.map((c) => c.call), ["checkout-proof/context", "checkout-proof/continue"]);
-  assert.deepEqual(calls[1]!.body, { realm: "acme", origin: ORIGIN, proof: PROOF });
+  assert.deepEqual(calls.map((c) => c.call), ["checkout-proof/continue"]);
+  assert.deepEqual(calls[0]!.body, { realm: "acme", origin: ORIGIN, proof: PROOF });
   // The proof cookie stays: a second press reaches the app, which says the link has expired (U9a).
   assert.equal(res.setCookies.length, 0);
 });
 
-test("A3: no proof, an invalid proof, or a continueUrl that is not the app's continue route goes to the app's normal sign-in", async () => {
+test("A3: no proof, an invalid proof, or a continueUrl that is not the app's continue route answers the app's normal sign-in", async () => {
   const none = setup({});
   const noProof = (await none.kit.handle(post("/session/checkout-continue", {})))!;
-  assert.equal(noProof.status, 303);
-  assert.equal(noProof.headers.Location, `${APP}/`);
+  assert.equal(noProof.status, 400);
+  assert.deepEqual(JSON.parse(noProof.body!), { signInUrl: `${APP}/` });
   assert.equal(none.calls.length, 0);
 
-  const invalid = setup({ "checkout-proof/context": { status: 400, body: { reason: "CHECKOUT_PROOF_INVALID" } } });
+  const invalid = setup({ "checkout-proof/continue": { status: 400, body: { reason: "CHECKOUT_PROOF_INVALID" } } });
   const bad = (await invalid.kit.handle(post("/session/checkout-continue", {}, { "__Host-zw_proof": PROOF })))!;
-  assert.equal(bad.headers.Location, `${APP}/`);
+  assert.deepEqual(JSON.parse(bad.body!), { signInUrl: `${APP}/` });
   assert.match(cookieNamed(bad.setCookies, "__Host-zw_proof")!, /Max-Age=0/);
 
   for (const continueUrl of ["https://evil.example/collect", `${APP}/session/checkout-continue?nonce=x`, `http://app.example.org/session/checkout-continue`, "javascript:alert(1)"]) {
-    const odd = setup({
-      "checkout-proof/context": { status: 200, body: { continueAs: "member", proofExpiresInSeconds: 1500 } },
-      "checkout-proof/continue": { status: 200, body: { nonce: NONCE, nonceExpiresInSeconds: 60, continueUrl } },
-    });
+    const odd = setup({ "checkout-proof/continue": { status: 200, body: { nonce: NONCE, nonceExpiresInSeconds: 60, continueUrl } } });
     const r = (await odd.kit.handle(post("/session/checkout-continue", {}, { "__Host-zw_proof": PROOF })))!;
-    assert.equal(r.status, 303, continueUrl);
-    assert.equal(r.headers.Location, `${APP}/`, continueUrl);
+    assert.equal(r.status, 400, continueUrl);
+    assert.deepEqual(JSON.parse(r.body!), { signInUrl: `${APP}/` }, continueUrl);
+    assert.ok(!r.body!.includes(NONCE));
   }
 });
 

@@ -66,7 +66,7 @@ The example site also reads `ZWINGD_COUNTRY_IDS`. That variable is the example's
 | `POST /session/code-resend` | v0.2.0. A new code on the same ticket. Same-site POST with `csrf` |
 | `POST /session/code-verify` | v0.2.0. Checks the code (`code`, `firstName?`, `lastName?`, `acceptedDocuments?` as JSON, and the purchase: `offer`, `expectedTotalMinor`, `couponCode?`, `paymentGateway?`, attribution). Keeps the proof server-side, re-quotes with it, and starts payment or answers the new price. Creates no account and no session. Same-site POST with `csrf` |
 | `POST /session/code-pay` | v0.2.0. "Pay {amount}" after the price changed: a start with the held proof at the shown total. Same-site POST with `csrf` |
-| `POST /session/checkout-continue` | v0.2.0. The thank-you button ("Continue sign-up" / "Go to my course"). Mints the one-time continue nonce at the press and answers a page whose form POSTs it to the app. Same-site POST with `csrf` |
+| `POST /session/checkout-continue` | v0.2.0. The thank-you button ("Continue sign-up" / "Go to my course"). Fetched by `CheckoutContinueButton` at the press: mints the one-time continue nonce and answers `{ nonce, continueUrl }` (or `400 { signInUrl }`). Same-site POST with `csrf` |
 
 ## 5. Next.js (App Router)
 
@@ -277,7 +277,7 @@ step.resend(); step.changeEmail();
 
 ### The thank-you page
 
-On the return page's **server**, `await getCheckoutContinue(kit)` (`@zwingd-ce/website-kit-next/server`) reads the proof context and answers the button: `{ label: "Continue sign-up" | "Go to my course", action, continueAs }`, or `null` when this browser holds no proof that is still good. Draw it with `<CheckoutContinueButton next={next} />` (client), or show your usual course link when it is `null`.
+On the return page's **server**, `await getCheckoutContinue(kit)` (`@zwingd-ce/website-kit-next/server`) reads the proof context and answers the button: `{ label: "Continue sign-up" | "Go to my course", action, continueAs, signInUrl }`, or `null` when this browser holds no proof that is still good. Draw it with `<CheckoutContinueButton next={next} />` (client), or show your usual course link when it is `null`.
 
 ```tsx
 // app/checkout/return/[orderId]/page.tsx (Server Component)
@@ -285,7 +285,7 @@ const next = await getCheckoutContinue(zwingd());
 return next ? <CheckoutContinueButton next={next} /> : <a href={courseUrl}>Go to my course</a>;
 ```
 
-The button is a same-site form POST to `/session/checkout-continue`. Only the press mints the 60-second continue nonce, never the page load. The kit answers a page with no script whose form POSTs the nonce to the app's `/session/checkout-continue`, with the visible button as its submit. The app then shows "Continue as {email}" and waits for that press too. If the proof has gone, the press opens the app's normal sign-in.
+One press on your website. The button POSTs (same-site, with `csrf`) to the kit's `/session/checkout-continue`, which mints the 60-second, single-use continue nonce at that moment, never on the page load, and answers `{ nonce, continueUrl }`. The button then submits a hidden form POST carrying the nonce to the app's `/session/checkout-continue`. The nonce stays in that press handler and the form's body: never in state, storage, an address or a log. The proof itself never leaves your server. The app then shows "Continue as {email}" and waits for its own press before signing in, which stops login CSRF. If the continue cannot be made (no proof, an expired one, any fault), the press opens the app's normal sign-in (`signInUrl`). The button needs JavaScript: it reads the form value in the browser, because the `SameSite=Strict` cookie is not sent on the return from the payment page.
 
 - **A custom storefront** calls the same API routes from its own server: `POST /api/external/session-handover/code/start|resend|verify`, then `checkout/quote` and `checkout/start` with `checkoutProof` and `buyerIp` (never from a browser), and `checkout-proof/context` and `checkout-proof/continue` for the thank-you page, each with `realm`, `origin` and `Authorization: Bearer <secret>`.
 

@@ -19,13 +19,14 @@
  *   POST /session/code-pay           same-site POST + CSRF. "Pay {amount}": a
  *                                    start with the proof at the shown total.
  *   POST /session/checkout-continue  same-site POST + CSRF, the thank-you
- *                                    button. Mints the 60 s continue nonce NOW
- *                                    (never on a page load) and answers a page
- *                                    whose form POSTs it to the app (A3).
+ *                                    button's fetch. Mints the 60 s continue
+ *                                    nonce NOW (never on a page load) and
+ *                                    answers `{ nonce, continueUrl }`; the
+ *                                    button POSTs it to the app in a form (A3).
  *
  * ⛔ The proof never reaches page JavaScript or an address: only the server
- * reads the cookie, and no answer carries it. The nonce goes only into the
- * body of a form POST, never into a URL.
+ * reads the cookie, and no answer carries it. The nonce goes only to the
+ * button's press handler and into the body of a form POST, never into a URL.
  * ⛔ The ticket lives only in the HttpOnly ticket cookie; nothing here logs an
  * email, a code, a ticket, a proof or a nonce.
  */
@@ -78,9 +79,18 @@ export interface CheckoutContinue {
   continueAs: ContinueAs;
   /** "Continue sign-up" or "Go to my course" (§8a). */
   label: string;
-  /** Where the button's form POSTs (with `csrf`): the kit's own route. */
+  /** Where the button's press POSTs (with `csrf`): the kit's own route. */
   action: string;
+  /** The app's normal sign-in: where the press goes when the continue cannot be made (E10). */
+  signInUrl: string;
 }
+
+/**
+ * What POST /session/checkout-continue answers the button's fetch: the
+ * 60 s single-use nonce and the app's continue route (200), or the app's
+ * normal sign-in (400). Never the proof.
+ */
+export type CheckoutContinueAnswer = { nonce: string; continueUrl: string } | { signInUrl: string };
 
 const EMAIL = /^[^\s@]{1,64}@[^\s@]{1,253}$/;
 const OBJECT_ID = /^[0-9a-f]{24}$/;
@@ -183,37 +193,6 @@ function refusalOf(res: CodeResult<unknown> & { ok: false }): { status: number; 
   }
   if (res.error === "rate_limited") return { status: 429, body: { reason: "WEBSITE_CODE_RATE_LIMITED" } };
   return { status: 503, body: { reason: UNAVAILABLE_REASON } };
-}
-
-const escapeHtml = (value: string): string =>
-  value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-
-/**
- * The page the thank-you press answers (A3): one form that POSTs the nonce to
- * the app, with the visible button as its submit. No script at all (CSP
- * `default-src 'none'`), nothing auto-submits, and it cannot be framed.
- */
-function continuePage(continueUrl: string, nonce: string, label: string): ResponseView {
-  const appOrigin = new URL(continueUrl).origin;
-  const body =
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">` +
-    `<meta name="referrer" content="no-referrer"><title>${escapeHtml(label)}</title></head><body>` +
-    `<form method="post" action="${escapeHtml(continueUrl)}">` +
-    `<input type="hidden" name="nonce" value="${escapeHtml(nonce)}">` +
-    `<button type="submit" autofocus>${escapeHtml(label)}</button>` +
-    `</form></body></html>`;
-  return {
-    status: 200,
-    headers: {
-      ...baseHeaders(),
-      "Content-Type": "text/html; charset=utf-8",
-      "Content-Security-Policy": `default-src 'none'; form-action ${appOrigin}; frame-ancestors 'none'; base-uri 'none'`,
-      "X-Frame-Options": "DENY",
-      "X-Content-Type-Options": "nosniff",
-    },
-    setCookies: [],
-    body,
-  };
 }
 
 export interface CodeRoutesDeps {
@@ -490,27 +469,31 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     const res = await proofContext(config, { proof });
     if (!res.ok) return null;
     const continueAs = res.body.continueAs;
-    return { continueAs, label: continueAs === "sign-up" ? CODE_STEP_COPY.continueSignUp : CODE_STEP_COPY.goToCourse, action: CODE_PATHS.checkoutContinue };
+    return {
+      continueAs,
+      label: continueAs === "sign-up" ? CODE_STEP_COPY.continueSignUp : CODE_STEP_COPY.goToCourse,
+      action: CODE_PATHS.checkoutContinue,
+      signInUrl: appHome,
+    };
   }
 
   /**
-   * The thank-you press (A3). The nonce is minted here, at the press, and goes
-   * only into the answered form's body. Anything wrong sends the buyer to the
+   * The thank-you press (A3), fetched by `CheckoutContinueButton`. The nonce is
+   * minted here, at the press, and answered as JSON to that one handler, which
+   * POSTs it to `continueUrl` in a form at once and keeps it nowhere else. The
+   * proof never leaves the server. Anything wrong answers `signInUrl`, the
    * app's normal sign-in (E10); nothing says why.
    */
   async function continueRoute(req: RequestView): Promise<ResponseView> {
     if (req.method !== "POST") return methodNotAllowed("POST");
     if (!sameSiteForm(req)) return forbidden();
-    const toApp = (setCookies: string[] = []): ResponseView => ({ status: 303, headers: { ...baseHeaders(), Location: appHome }, setCookies });
+    const signIn = (setCookies: string[] = []): ResponseView => json(400, { signInUrl: appHome } satisfies CheckoutContinueAnswer, setCookies);
     const proof = proofOf(req.cookies);
-    if (!proof) return toApp();
-    const context = await proofContext(config, { proof });
-    if (!context.ok) return toApp(context.error === "refused" && context.reason === "CHECKOUT_PROOF_INVALID" ? [clearProof()] : []);
+    if (!proof) return signIn();
     const minted = await proofContinue(config, { proof });
-    if (!minted.ok) return toApp(minted.error === "refused" && minted.reason === "CHECKOUT_PROOF_INVALID" ? [clearProof()] : []);
-    const label = context.body.continueAs === "sign-up" ? CODE_STEP_COPY.continueSignUp : CODE_STEP_COPY.goToCourse;
+    if (!minted.ok) return signIn(minted.error === "refused" && minted.reason === "CHECKOUT_PROOF_INVALID" ? [clearProof()] : []);
     // The proof cookie stays: a second press mints again, and the app answers "That link has expired" (U9a).
-    return continuePage(minted.body.continueUrl, minted.body.nonce, label);
+    return json(200, { nonce: minted.body.nonce, continueUrl: minted.body.continueUrl } satisfies CheckoutContinueAnswer);
   }
 
   return {

@@ -2,9 +2,9 @@
 // Checkout v3.2: for a buyer who proved their email in the code step, the
 // SERVER reads the proof context (getCheckoutContinue) and hands the page only
 // the button: "Continue sign-up" (new or pending) or "Go to my course"
-// (member). The press is a form POST to /session/checkout-continue, which
-// mints the one-time continue nonce then (never on this page load) and sends
-// the buyer on to the app with a form POST. Without a proof (another browser,
+// (member). One press: the button asks /session/checkout-continue, which
+// mints the one-time continue nonce then (never on this page load), and sends
+// the buyer on to the app with a form POST carrying it. Without a proof (another browser,
 // or it expired) the page shows the usual course link instead.
 import { getCheckoutContinue } from "@zwingd-ce/website-kit-next/server";
 

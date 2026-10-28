@@ -156,7 +156,7 @@ export interface WebsiteKit extends MemberReader {
   codeVerify(req: RequestView): Promise<ResponseView>;
   /** v0.2.0 `POST /session/code-pay` (same-site POST + CSRF): "Pay {amount}" with the held proof. */
   codePay(req: RequestView): Promise<ResponseView>;
-  /** v0.2.0 `POST /session/checkout-continue` (same-site POST + CSRF): the thank-you press; mints the nonce and answers the form to the app. */
+  /** v0.2.0 `POST /session/checkout-continue` (same-site POST + CSRF): the thank-you press; mints the nonce and answers `{ nonce, continueUrl }`. */
   checkoutContinue(req: RequestView): Promise<ResponseView>;
   /**
    * v0.2.0, server only: the thank-you button ("Continue sign-up" / "Go to my

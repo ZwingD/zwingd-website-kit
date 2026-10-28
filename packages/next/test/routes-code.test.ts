@@ -74,15 +74,13 @@ test("a cross-site code POST is 403 and never reaches the API", async () => {
   assert.equal(calls.length, 0);
 });
 
-test("POST /session/checkout-continue answers the script-free form to the app; GET is 405", async () => {
-  const { routes } = setup();
-  const res = await routes.POST(form("/session/checkout-continue", `csrf=${CSRF}`, `__Host-zw_csrf=${CSRF}; __Host-zw_proof=${PROOF}`));
+test("POST /session/checkout-continue answers { nonce, continueUrl } as JSON; GET is 405", async () => {
+  const { routes, calls } = setup();
+  const res = await routes.POST(form("/session/checkout-continue", `csrf=${CSRF}`, `__Host-zw_csrf=${CSRF}; __Host-zw_proof=${PROOF}`, { origin: ORIGIN, accept: "application/json" }));
   assert.equal(res.status, 200);
-  assert.match(res.headers.get("content-type")!, /^text\/html/);
-  const html = await res.text();
-  assert.ok(html.includes(`action="${APP}/session/checkout-continue"`));
-  assert.ok(html.includes(`name="nonce" value="${NONCE}"`));
-  assert.ok(html.includes(">Go to my course</button>"));
+  assert.match(res.headers.get("content-type")!, /^application\/json/);
+  assert.deepEqual(await res.json(), { nonce: NONCE, continueUrl: `${APP}/session/checkout-continue` });
+  assert.deepEqual(calls, ["checkout-proof/continue"]);
   assert.equal((await routes.GET(new Request(`${ORIGIN}/session/checkout-continue`))).status, 405);
 });
 
@@ -110,39 +108,104 @@ after(async () => {
   await window.happyDOM.close();
 });
 
-test("CheckoutContinueButton: a form POST to the kit's route with the csrf read same-origin; nothing minted on load", async () => {
+const NEXT = { continueAs: "sign-up" as const, label: "Continue sign-up", action: "/session/checkout-continue", signInUrl: `${APP}/` };
+
+async function renderButton(answer: { status: number; body: unknown } | "network") {
   const React = await import("react");
   const REACT_DOM_CLIENT = "react-dom/client";
   const { createRoot } = (await import(REACT_DOM_CLIENT)) as { createRoot(el: unknown): { render(n: unknown): void; unmount(): void } };
   const { CheckoutContinueButton } = await import("../src/code-step-parts.tsx");
-  const fetched: string[] = [];
-  const fetchImpl = (async (input: string | URL | Request) => {
-    fetched.push(String(input));
-    return new Response(JSON.stringify({ formToken: CSRF, pending: null }), { status: 200, headers: { "Content-Type": "application/json" } });
+  const fetched: { url: string; init?: RequestInit }[] = [];
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    fetched.push({ url: String(input), ...(init ? { init } : {}) });
+    if (String(input).endsWith("/code-step")) return new Response(JSON.stringify({ formToken: CSRF, pending: null }), { status: 200 });
+    if (answer === "network") throw new TypeError("fetch failed");
+    return new Response(JSON.stringify(answer.body), { status: answer.status, headers: { "Content-Type": "application/json" } });
   }) as typeof fetch;
+  const submitted: { action: string; method: string; fields: Record<string, string> }[] = [];
+  const navigated: string[] = [];
   const container = window.document.createElement("div");
   window.document.body.appendChild(container);
   const root = createRoot(container);
   await React.act(async () => {
-    root.render(React.createElement(CheckoutContinueButton, { next: { continueAs: "sign-up", label: "Continue sign-up", action: "/session/checkout-continue" }, fetch: fetchImpl }));
+    root.render(
+      React.createElement(CheckoutContinueButton, {
+        next: NEXT,
+        fetch: fetchImpl,
+        navigate: (url: string) => void navigated.push(url),
+        submit: (f: HTMLFormElement) => {
+          const fields: Record<string, string> = {};
+          for (const el of Array.from(f.querySelectorAll("input"))) fields[el.name] = el.value;
+          submitted.push({ action: f.getAttribute("action")!, method: f.getAttribute("method")!, fields });
+          f.remove();
+        },
+      }),
+    );
   });
   await React.act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
-  const f = container.querySelector("form")!;
-  assert.equal(f.getAttribute("method"), "post");
-  assert.equal(f.getAttribute("action"), "/session/checkout-continue");
-  assert.equal((container.querySelector('input[name="csrf"]') as unknown as HTMLInputElement).value, CSRF);
-  const button = container.querySelector("button")!;
+  const press = async () => {
+    await React.act(async () => {
+      (container.querySelector("button") as unknown as HTMLButtonElement).click();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+  };
+  const unmount = async () => {
+    await React.act(async () => root.unmount());
+    container.remove();
+  };
+  return { container, fetched, submitted, navigated, press, unmount };
+}
+
+test("CheckoutContinueButton: ONE press fetches the nonce, then form-POSTs it to the app; nothing minted on load, nothing kept", async () => {
+  const b = await renderButton({ status: 200, body: { nonce: NONCE, continueUrl: `${APP}/session/checkout-continue` } });
+  const button = b.container.querySelector("button")!;
   assert.equal(button.textContent, "Continue sign-up");
   assert.equal((button as unknown as HTMLButtonElement).disabled, false);
-  assert.deepEqual(fetched, ["/session/code-step"], "only the form value is read on load: no nonce");
-  assert.equal(container.querySelector('input[name="nonce"]'), null);
-  await React.act(async () => root.unmount());
+  assert.deepEqual(b.fetched.map((f) => f.url), ["/session/code-step"], "only the form value is read on load: no nonce");
 
-  const empty = createRoot(container);
+  await b.press();
+  const call = b.fetched[1]!;
+  assert.equal(call.url, "/session/checkout-continue");
+  assert.equal(call.init?.method, "POST");
+  assert.equal(new Headers(call.init?.headers).get("accept"), "application/json");
+  assert.equal(String(call.init?.body), `csrf=${CSRF}`);
+  assert.deepEqual(b.submitted, [{ action: `${APP}/session/checkout-continue`, method: "post", fields: { nonce: NONCE } }]);
+  assert.deepEqual(b.navigated, []);
+  // Nowhere else: not in the page, storage or an address.
+  assert.ok(!window.document.body.innerHTML.includes(NONCE));
+  assert.equal(window.sessionStorage.length, 0);
+  assert.equal(window.localStorage.length, 0);
+  assert.ok(!window.location.href.includes(NONCE));
+  await b.unmount();
+});
+
+test("CheckoutContinueButton: a failure answer, a network fault or a continueUrl that is not the app's route opens the app's normal sign-in", async () => {
+  for (const answer of [
+    { status: 400, body: { signInUrl: `${APP}/` } },
+    "network" as const,
+    { status: 200, body: { nonce: NONCE, continueUrl: "https://evil.example/session/checkout-continue?x=1" } },
+    { status: 200, body: { nonce: "short", continueUrl: `${APP}/session/checkout-continue` } },
+  ]) {
+    const b = await renderButton(answer);
+    await b.press();
+    assert.deepEqual(b.navigated, [`${APP}/`], JSON.stringify(answer));
+    assert.deepEqual(b.submitted, []);
+    await b.unmount();
+  }
+});
+
+test("CheckoutContinueButton: null draws nothing", async () => {
+  const React = await import("react");
+  const REACT_DOM_CLIENT = "react-dom/client";
+  const { createRoot } = (await import(REACT_DOM_CLIENT)) as { createRoot(el: unknown): { render(n: unknown): void; unmount(): void } };
+  const { CheckoutContinueButton } = await import("../src/code-step-parts.tsx");
+  const container = window.document.createElement("div");
+  window.document.body.appendChild(container);
+  const root = createRoot(container);
   await React.act(async () => {
-    empty.render(React.createElement(CheckoutContinueButton, { next: null, fetch: fetchImpl }));
+    root.render(React.createElement(CheckoutContinueButton, { next: null }));
   });
   assert.equal(container.innerHTML, "");
-  await React.act(async () => empty.unmount());
+  await React.act(async () => root.unmount());
   container.remove();
 });

@@ -10,13 +10,18 @@
  *
  *   <CheckoutContinueButton next={await getCheckoutContinue(kit)} />
  *     The thank-you button (§8 step 4, A3): "Continue sign-up" or "Go to my
- *     course", picked on the server. It is a same-site form POST to the kit's
- *     /session/checkout-continue, which mints the continue nonce at the press
- *     (never on a page load) and answers the form that POSTs it to the app.
+ *     course", picked on the server. ONE press: it POSTs (same-site, with the
+ *     form value) to the kit's /session/checkout-continue, which mints the 60 s
+ *     continue nonce then (never on a page load); the button then submits a
+ *     hidden form POST with the nonce to the app's /session/checkout-continue.
+ *     The nonce lives only in that handler's local variable and the form's
+ *     body: no state, no storage, no URL, no log. The app still asks
+ *     "Continue as {email}" before signing in. Any failure opens the app's
+ *     normal sign-in.
  */
 import { useEffect, useState, type CSSProperties } from "react";
 
-import type { CheckoutContinue } from "@zwingd-ce/website-kit";
+import { APP_CONTINUE_PATH, type CheckoutContinue } from "@zwingd-ce/website-kit";
 
 import { createCodeStepClient, type CodeStep } from "./use-code-step.ts";
 
@@ -51,17 +56,33 @@ export interface CheckoutContinueButtonProps {
   /** From `getCheckoutContinue(kit)` on the server. Null: nothing is drawn. */
   next: CheckoutContinue | null;
   className?: string;
-  buttonClassName?: string;
   /** Where the kit's routes are mounted. Default `/session`. */
   basePath?: string;
   /** The `csrf` value, when the page already has it; else read from GET /session/code-step. */
   formToken?: string | null;
-  /** For tests. */
+  /** For tests and other runtimes. Defaults: the global `fetch`, a real form submit, `location.assign`. */
   fetch?: typeof fetch;
+  submit?: (form: HTMLFormElement) => void;
+  navigate?: (url: string) => void;
 }
 
-export function CheckoutContinueButton({ next, className, buttonClassName, basePath, formToken, fetch: fetchImpl }: CheckoutContinueButtonProps) {
+const NONCE = /^[A-Za-z0-9_-]{16,512}$/;
+
+/** The app's continue route only (A3, A4): https, exactly this path, no query or fragment. */
+function continueUrlOk(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    const local = url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
+    return (url.protocol === "https:" || local) && !url.username && !url.password && !url.search && !url.hash && url.pathname === APP_CONTINUE_PATH;
+  } catch {
+    return false;
+  }
+}
+
+export function CheckoutContinueButton({ next, className, basePath, formToken, fetch: fetchImpl, submit, navigate }: CheckoutContinueButtonProps) {
   const [csrf, setCsrf] = useState<string | null>(formToken ?? null);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (csrf || !next) return;
@@ -77,15 +98,59 @@ export function CheckoutContinueButton({ next, className, buttonClassName, baseP
     };
   }, [csrf, next, basePath, fetchImpl]);
 
+  // Back from the app (U9a): a page restored from the back/forward cache may be pressed again.
+  useEffect(() => {
+    const again = () => setBusy(false);
+    globalThis.addEventListener?.("pageshow", again);
+    return () => globalThis.removeEventListener?.("pageshow", again);
+  }, []);
+
   if (!next) return null;
   const base = (basePath ?? "/session").replace(/\/+$/, "");
-  const action = basePath ? `${base}${next.action.slice("/session".length)}` : next.action;
+  const endpoint = basePath ? `${base}${next.action.slice("/session".length)}` : next.action;
+  const signInUrl = next.signInUrl;
+
+  async function press() {
+    if (!csrf || busy) return;
+    const token = csrf;
+    setBusy(true);
+    const go = navigate ?? ((url: string) => (globalThis as { location?: { assign(u: string): void } }).location?.assign(url));
+    const answer = await (async (): Promise<{ nonce?: unknown; continueUrl?: unknown } | null> => {
+      try {
+        const res = await (fetchImpl ?? globalThis.fetch)(endpoint, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+          body: new URLSearchParams({ csrf: token }).toString(),
+        });
+        return res.ok ? ((await res.json()) as { nonce?: unknown; continueUrl?: unknown }) : null;
+      } catch {
+        return null;
+      }
+    })();
+    const nonce = answer?.nonce;
+    const continueUrl = answer?.continueUrl;
+    if (typeof nonce !== "string" || !NONCE.test(nonce) || !continueUrlOk(continueUrl)) {
+      go(signInUrl);
+      return;
+    }
+    // The nonce goes into this form's body only, and the form leaves with it.
+    const form = document.createElement("form");
+    form.method = "post";
+    form.action = continueUrl;
+    form.style.display = "none";
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = "nonce";
+    input.value = nonce;
+    form.appendChild(input);
+    document.body.appendChild(form);
+    (submit ?? ((f: HTMLFormElement) => f.submit()))(form);
+  }
+
   return (
-    <form method="post" action={action} className={className}>
-      <input type="hidden" name="csrf" value={csrf ?? ""} />
-      <button type="submit" className={buttonClassName} disabled={!csrf} aria-disabled={!csrf}>
-        {next.label}
-      </button>
-    </form>
+    <button type="button" className={className} disabled={!csrf || busy} aria-disabled={!csrf || busy} aria-busy={busy} onClick={() => void press()}>
+      {next.label}
+    </button>
   );
 }
