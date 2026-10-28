@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.1.3
+
+- Fix: `signOutReturn` (Next.js) now answers an absolute `Location` on the request's own origin. Next's proxy adapter parses a proxy's `Location` with no base, so 0.1.2's relative saved path threw "Invalid URL" and the site's `/` answered 500 for a member coming back from the app's sign-out. Express and Node http (`createSessionHandler`) were not affected. Sites on 0.1.2 with `signOutReturn` in `proxy.ts` / `middleware.ts` should update.
 - Docs: a developer guide for website teams, `docs/developer-guide.md` (ZwingD/zwingd-backend#1884): what to ask the workspace admin and the platform team for, server settings, member sign-in, the guest checkout pop-up and return page, member Buy Now, testing, going live and troubleshooting. The README links to it.
 
 ## 0.1.2
