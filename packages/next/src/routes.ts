@@ -96,5 +96,13 @@ export function signOutReturn(kit: WebsiteKit, request: Request): Response | und
     cookies: parseCookieHeader(request.headers.get("cookie")),
     headers: {},
   });
-  return view ? toResponse(view) : undefined;
+  if (!view) return undefined;
+  const response = toResponse(view);
+  // A proxy (middleware) must answer an ABSOLUTE Location: Next's adapter
+  // parses it with `new NextURL(location)` and no base, so the kit's relative
+  // saved path threw "Invalid URL" and the page answered 500. The saved path is
+  // same-origin by the saved-path rule, so this keeps the request's own origin.
+  const location = response.headers.get("location");
+  if (location) response.headers.set("location", new URL(location, request.url).href);
+  return response;
 }
