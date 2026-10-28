@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 import { createWebsiteKit } from "@zwingd-ce/website-kit";
 
 import { createSessionRoutes, signOutReturn } from "../src/routes.ts";
+// Next's internal URL class: the one its proxy adapter parses a Location with.
+import { NextURL } from "next/dist/server/web/next-url.js";
 
 const ORIGIN = "https://www.example.org";
 const APP = "https://app.example.org";
@@ -126,7 +128,12 @@ test("kit #10: sign-out from a course page; the app returns to /, and middleware
   assert.equal(signOutReturn(kit, new Request(`${ORIGIN}/about`, { headers: { cookie: cookieHeader(jar) } })), undefined);
   const back = signOutReturn(kit, new Request(`${ORIGIN}/`, { headers: { cookie: cookieHeader(jar) } }))!;
   assert.equal(back.status, 303);
-  assert.equal(back.headers.get("location"), "/courses/afscm?x=1");
+  // Absolute, on the request's own origin: Next's proxy adapter parses the
+  // Location with `new NextURL(location)` and no base, so a relative one throws
+  // "Invalid URL" and the page answers 500 (stage, 2026-10-28).
+  assert.equal(back.headers.get("location"), `${ORIGIN}/courses/afscm?x=1`);
+  // Exactly what next/dist/server/web/adapter.js does with a proxy's Location.
+  assert.doesNotThrow(() => new NextURL(back.headers.get("location")!, { forceLocale: false, headers: {}, nextConfig: {} }));
   jarFrom(back, jar);
   // Once only.
   assert.equal(signOutReturn(kit, new Request(`${ORIGIN}/`, { headers: { cookie: cookieHeader(jar) } })), undefined);
