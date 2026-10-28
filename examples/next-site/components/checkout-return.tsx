@@ -5,13 +5,16 @@
 // that the token was kept for this order in this tab, never in the address.
 import { useEffect, useState } from "react";
 
+import { CheckoutContinueButton, CODE_STEP_COPY, type CheckoutContinue } from "@zwingd-ce/website-kit-next/client";
+
 import { orderStorageKey } from "@/components/buy-now";
 
 /**
- * `continueLabel` / `continueHref` come from the server page: the label only,
- * never the new-account flag, and the same href and analytics event for both.
+ * `next` comes from the server page (getCheckoutContinue): the button's label
+ * and where it posts, never the proof. Null: no code-step proof in this
+ * browser, so the usual course link.
  */
-export function CheckoutReturn({ orderId, continueLabel, continueHref }: { orderId: string; continueLabel: string; continueHref: string }) {
+export function CheckoutReturn({ orderId, next, courseHref }: { orderId: string; next: CheckoutContinue | null; courseHref: string }) {
   const [found, setFound] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -29,7 +32,7 @@ export function CheckoutReturn({ orderId, continueLabel, continueHref }: { order
     <section>
       <h1>Thank you</h1>
       <p>Your order {orderId} is on its way. This page would now confirm the payment with the stored order token.</p>
-      <a href={continueHref}>{continueLabel}</a>
+      {next ? <CheckoutContinueButton next={next} /> : <a href={courseHref}>{CODE_STEP_COPY.goToCourse}</a>}
     </section>
   ) : (
     <section>

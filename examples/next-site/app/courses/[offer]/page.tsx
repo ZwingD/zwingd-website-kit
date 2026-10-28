@@ -36,8 +36,12 @@ export default async function CoursePage({
       <section>
         <h1>Course</h1>
         <p>Log in to buy as a member, or use the guest checkout.</p>
-        {/* Checkout v3.1: a workspace with verifyEmail "before-payment" verifies the buyer's email first. */}
-        {process.env.EXAMPLE_VERIFY_EMAIL === "before-payment" ? <CodeStep offer={offer} /> : <GuestCheckoutStandIn />}
+        {/* Checkout v3.2: a workspace with verifyEmail "before-payment" has the buyer prove their email first (no account, no session). */}
+        {process.env.EXAMPLE_VERIFY_EMAIL === "before-payment" ? (
+          <CodeStep offer={offer} expectedTotalMinor={guestTotalMinor()} courseCode={courseCode} />
+        ) : (
+          <GuestCheckoutStandIn />
+        )}
       </section>
     );
   }
@@ -59,6 +63,12 @@ export default async function CoursePage({
       )}
     </section>
   );
+}
+
+/** The guest price the page shows. A real site reads it from the public guest quote; the example takes it from its env. */
+function guestTotalMinor(): string {
+  const v = process.env.EXAMPLE_GUEST_TOTAL_MINOR ?? "";
+  return /^\d{1,18}$/.test(v) ? v : "0";
 }
 
 /** Stands in for the website's guest checkout pop-up (#1866): not part of the kit. */

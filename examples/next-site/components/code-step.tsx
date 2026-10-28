@@ -1,68 +1,100 @@
 "use client";
-// Checkout v3.1: the buyer verifies their email by code before paying, when the
+// Checkout v3.2: the buyer proves their email by code before paying, when the
 // workspace's websiteCheckoutStatus.verifyEmail is "before-payment". The kit
-// runs the step (useCodeStep); the site only draws it. The copy is the kit's
-// CODE_STEP_COPY: a site may restyle it, never reword it.
-import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+// runs the step (useCodeStep) and draws its live region; the site only draws
+// the rest. The copy is the kit's CODE_STEP_COPY: restyle it, never reword it.
+//
+// No account and no session come from the code: the proof stays on the site's
+// server. After a right code the buyer goes straight to payment, or, when the
+// re-quote changed the total (member price), sees it and presses "Pay {amount}".
+import { useState, type ReactNode } from "react";
 
-import { CODE_STEP_COPY, fillCopy, useCodeStep } from "@zwingd-ce/website-kit-next/client";
+import { CODE_STEP_COPY, CodeStepLiveRegion, fillCopy, useCodeStep, type AcceptedDocument } from "@zwingd-ce/website-kit-next/client";
 
-export function CodeStep(props: { offer: string; termsUrl?: string }) {
-  const router = useRouter();
-  const step = useCodeStep({ offer: props.offer });
-  const [email, setEmail] = useState("");
-  const [code, setCode] = useState("");
-  const { state } = step;
+import { orderStorageKey } from "@/components/buy-now";
+import { OwnedCourse } from "@/components/owned-course";
 
-  // Signed in on the website now: the server page shows the member price and Buy now.
-  useEffect(() => {
-    if (state.step === "verified") router.refresh();
-  }, [state.step, router]);
+export function CodeStep(props: {
+  offer: string;
+  /** The guest total the page showed (minor units). */
+  expectedTotalMinor: string;
+  courseCode: string | null;
+  /** The workspace's legal documents when it requires terms, with the page that shows them. */
+  terms?: { documents: AcceptedDocument[]; url: string };
+}) {
+  const step = useCodeStep({
+    offer: props.offer,
+    expectedTotalMinor: props.expectedTotalMinor,
+    storageKey: orderStorageKey,
+    coursePath: typeof window === "undefined" ? null : window.location.pathname,
+    ...(props.terms ? { terms: props.terms.documents } : {}),
+  });
+  const [email, setEmail] = useState(step.state.email);
+  const { state, ids } = step;
+  const error = state.error;
 
-  const terms = props.termsUrl ? (
-    <p>
-      {CODE_STEP_COPY.terms.split("{terms link}")[0]}
-      <a href={props.termsUrl}>terms</a>
-      {CODE_STEP_COPY.terms.split("{terms link}")[1]}
-    </p>
-  ) : null;
+  // "I agree to the {terms links}." with the site's link where the placeholder is.
+  const [termsBefore, termsAfter] = CODE_STEP_COPY.terms.split("{terms links}");
+  const terms =
+    props.terms && state.termsRequired ? (
+      <p>
+        <input {...step.termsInputProps} />{" "}
+        <label htmlFor={ids.terms}>
+          {termsBefore}
+          <a href={props.terms.url}>terms</a>
+          {termsAfter}
+        </label>
+        {error?.field === "terms" ? <span id={ids.termsError} hidden>{error.message}</span> : null}
+      </p>
+    ) : null;
 
+  let body: ReactNode;
   if (state.step === "email" || state.step === "sending") {
-    return (
-      <form onSubmit={(e) => { e.preventDefault(); void step.sendCode(email); }}>
-        <label htmlFor="buyer-email">Email</label>
-        <input id="buyer-email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
-        {terms}
+    body = (
+      <form onSubmit={(e) => { e.preventDefault(); void step.sendCode(email); }} noValidate>
+        <label htmlFor={ids.email}>Email</label>
+        <input {...step.emailInputProps} required value={email} onChange={(e) => setEmail(e.target.value)} />
+        {error ? <p id={ids.emailError} role="alert">{error.message}</p> : null}
         <button type="submit" disabled={step.busy}>Send code</button>
-        {state.error ? <p role="alert">{state.error.message}</p> : null}
+      </form>
+    );
+  } else if (state.step === "owned") {
+    body = <OwnedCourse courseCode={props.courseCode} message={state.settled ? "This course is yours now." : "You already have this course."} />;
+  } else if (state.step === "confirm-price" || state.step === "pay-failed" || (state.step === "paying" && state.price)) {
+    body = (
+      <div>
+        {step.priceLine ? <p>{step.priceLine}</p> : null}
+        <button type="button" onClick={() => void step.pay()} disabled={step.busy} aria-describedby={error?.field === "payment" ? ids.paymentError : undefined}>
+          {step.busy ? CODE_STEP_COPY.goingToPayment : (step.payLabel ?? CODE_STEP_COPY.verifyButton)}
+        </button>
+        {error?.field === "payment" ? <p id={ids.paymentError} role="alert">{error.message}</p> : null}
+      </div>
+    );
+  } else if (state.step === "paying") {
+    body = <p aria-hidden="true">{CODE_STEP_COPY.goingToPayment}</p>;
+  } else {
+    body = (
+      <form onSubmit={(e) => { e.preventDefault(); void step.verify(); }}>
+        <h2>{CODE_STEP_COPY.heading}</h2>
+        <p>{fillCopy(CODE_STEP_COPY.intro, { email: state.email })}</p>
+        <label htmlFor={ids.code}>{CODE_STEP_COPY.codeLabel}</label>
+        {/* One input, no maxLength (a pasted "123 456" is stripped, then cut to six), no key handler: Tab leaves it. */}
+        <input {...step.codeInputProps} />
+        <p id={ids.codeHint}>{CODE_STEP_COPY.hint}</p>
+        {error?.field === "code" ? <p id={ids.codeError} role="alert">{error.message}</p> : null}
+        {terms}
+        <button type="submit" disabled={step.busy}>{CODE_STEP_COPY.verifyButton}</button>
+        <button type="button" onClick={() => void step.resend()} disabled={!step.canResend}>{step.resendLabel}</button>
+        <button type="button" onClick={() => { setEmail(state.email); step.changeEmail(); }} disabled={step.busy}>{CODE_STEP_COPY.changeEmail}</button>
       </form>
     );
   }
 
-  if (state.step === "verified") return state.notice === "account-ready" ? <p role="status">{CODE_STEP_COPY.accountReady}</p> : null;
-
   return (
-    <form onSubmit={(e) => { e.preventDefault(); void step.verify(code); }}>
-      <h2>{CODE_STEP_COPY.heading}</h2>
-      <p>{fillCopy(CODE_STEP_COPY.intro, { email: state.email })}</p>
-      <label htmlFor="buyer-code">{CODE_STEP_COPY.codeLabel}</label>
-      <input
-        id="buyer-code"
-        ref={step.codeInputRef}
-        autoComplete="one-time-code"
-        inputMode="numeric"
-        maxLength={state.codeLength}
-        value={code}
-        onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
-        aria-describedby={state.error ? "buyer-code-error buyer-code-hint" : "buyer-code-hint"}
-      />
-      <p id="buyer-code-hint">{CODE_STEP_COPY.hint}</p>
-      {state.error ? <p id="buyer-code-error" role="alert">{state.error.message}</p> : null}
-      {terms}
-      <button type="submit" disabled={step.busy}>{CODE_STEP_COPY.verifyButton}</button>
-      <button type="button" onClick={() => void step.resend()} disabled={!step.canResend}>{step.resendLabel}</button>
-      <button type="button" onClick={step.changeEmail} disabled={step.busy}>{CODE_STEP_COPY.changeEmail}</button>
-    </form>
+    <section>
+      {body}
+      {/* The kit's polite live region: the countdown at its start and when ready, and "Taking you to payment…". */}
+      <CodeStepLiveRegion step={step} />
+    </section>
   );
 }

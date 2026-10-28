@@ -16,6 +16,9 @@ export function zwingd(): WebsiteKit {
         // kit #11: the app's page for one course by code, if the workspace's app has one
         // (SCPMI: /communities/courses/:code). Without it, course links open /communities/learning.
         ...(process.env.ZWINGD_COURSE_PATH ? { coursePath: process.env.ZWINGD_COURSE_PATH } : {}),
+        // The visitor's country for pricing, from the host's geo header; never the body. Used by the
+        // code step's quote with the proof, and by member checkout (which inherits it).
+        visitorCountry: (req) => countryIdFor(req.headers["x-vercel-ip-country"]),
       }),
     );
   }
@@ -38,10 +41,10 @@ export function countryIdFor(iso: string | null | undefined): string | null {
   }
 }
 
-/** Member checkout (POST /session/checkout). The country comes from the request's geo header, never the body. */
+/** Member checkout (POST /session/checkout). The country comes from the kit's visitorCountry (the geo header), never the body. */
 export function memberCheckout(): MemberCheckout {
   if (!checkout) {
-    checkout = createMemberCheckout(zwingd(), { visitorCountry: (req) => countryIdFor(req.headers["x-vercel-ip-country"]) });
+    checkout = createMemberCheckout(zwingd());
   }
   return checkout;
 }
