@@ -1,7 +1,8 @@
 /**
  * createSessionRoutes serves the v0.2.0 code step and the thank-you continue
  * through the same [action] route (Web Request / Response), and
- * CheckoutContinueButton draws the press as a same-site form POST.
+ * CheckoutContinueButton does the continue in one press: a same-site fetch for
+ * the nonce, then a form POST of it to the app.
  */
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";

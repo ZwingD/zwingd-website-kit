@@ -62,7 +62,7 @@ function fakeServer(replies: Partial<Record<"code-verify" | "code-pay" | "code-r
   return { sent, fetch: fetchImpl };
 }
 
-async function mount(server: ReturnType<typeof fakeServer>, extra: { terms?: typeof TERMS; clock?: { now: number } } = {}) {
+async function mount(server: ReturnType<typeof fakeServer>, extra: { terms?: typeof TERMS; clock?: { now: number }; country?: string } = {}) {
   const React = await import("react");
   const { act } = React;
   const REACT_DOM_CLIENT = "react-dom/client";
@@ -83,6 +83,7 @@ async function mount(server: ReturnType<typeof fakeServer>, extra: { terms?: typ
       storage: { setItem: (k, v) => void stored.set(k, v) },
       navigate: (url) => void navigated.push(url),
       ...(extra.terms ? { terms: extra.terms } : {}),
+      ...(extra.country ? { country: extra.country } : {}),
     });
     handle.current = step;
     const e = step.state.error;
@@ -315,5 +316,23 @@ test("locked shows the wait in minutes", async () => {
   await act(async () => { await handle.current!.verify(); });
   await settle(act);
   assert.equal(q(container, `#${handle.current!.ids.codeError}`).textContent, "Too many tries. Try again in 5 min.");
+  await unmount();
+});
+
+test("country: the page's priced-in country is posted with verify and pay", async () => {
+  const COUNTRY_ID = "6520f1c2a3b4c5d6e7f80a05";
+  const server = fakeServer({
+    "code-verify": { status: 200, body: { kind: "confirm-price", totalMinor: "7900", currencyCode: "USD", minorUnitExponent: 2 } },
+    "code-pay": { status: 200, body: REDIRECT },
+  });
+  const { act, handle, unmount } = await mount(server, { country: COUNTRY_ID });
+  await act(async () => { await handle.current!.sendCode("buyer@example.org"); });
+  await act(async () => { handle.current!.setCode("123456"); });
+  await act(async () => { await handle.current!.verify(); });
+  await settle(act);
+  await act(async () => { await handle.current!.pay(); });
+  await settle(act);
+  assert.equal(server.sent.find((x) => x.path === "/session/code-verify")!.form.country, COUNTRY_ID);
+  assert.equal(server.sent.find((x) => x.path === "/session/code-pay")!.form.country, COUNTRY_ID);
   await unmount();
 });

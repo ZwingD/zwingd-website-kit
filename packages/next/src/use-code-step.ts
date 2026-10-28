@@ -53,6 +53,14 @@ export interface UseCodeStepOptions {
   expectedTotalMinor: string;
   paymentGateway?: string;
   couponCode?: string;
+  /**
+   * The country the page priced `expectedTotalMinor` in, as a master-data
+   * country id (24 hex, the `_id` your guest quote and start take as
+   * `country`), e.g. the one the buyer picked in your pop-up. The re-quote
+   * after the code uses it, so a non-member sees the same total. Without it
+   * the kit's `visitorCountry` setting (the geo header) is used.
+   */
+  country?: string | null;
   attribution?: CheckoutAttribution;
   /** The site's sessionStorage key for an order, exactly as its return page reads it. */
   storageKey: (orderId: string) => string;
@@ -314,6 +322,7 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
     const form: Record<string, string> = { offer: o.offer, expectedTotalMinor };
     if (o.paymentGateway) form.paymentGateway = o.paymentGateway;
     if (o.couponCode) form.couponCode = o.couponCode;
+    if (o.country) form.country = o.country;
     for (const key of CHECKOUT_ATTRIBUTION_KEYS) {
       const value = o.attribution?.[key];
       if (typeof value === "string" && value !== "") form[key] = value;

@@ -12,7 +12,10 @@
  *   POST /session/code-verify        same-site POST + CSRF. `code`, `firstName?`,
  *                                    `lastName?`, `acceptedDocuments?` (JSON) and
  *                                    the purchase (`offer`, `expectedTotalMinor`,
- *                                    `couponCode?`, `paymentGateway?`, attribution).
+ *                                    `country?`, `couponCode?`, `paymentGateway?`,
+ *                                    attribution). `country` is the master-data
+ *                                    country id the page priced the guest total
+ *                                    in; it wins over the kit's `visitorCountry`.
  *                                    Verify → proof cookie → re-quote with the
  *                                    proof → unchanged total: `checkout/start`
  *                                    at once; changed: `confirm-price` (A2).
@@ -276,14 +279,26 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     const expectedTotalMinor = typeof form.expectedTotalMinor === "string" && EXPECTED_TOTAL.test(form.expectedTotalMinor) ? form.expectedTotalMinor : null;
     const couponCode = typeof form.couponCode === "string" && COUPON.test(form.couponCode) ? form.couponCode : undefined;
     const paymentGateway = typeof form.paymentGateway === "string" && OBJECT_ID.test(form.paymentGateway) ? form.paymentGateway : undefined;
+    // The country the page priced `expectedTotalMinor` in (e.g. one the buyer picked), as a master-data id.
+    const country = typeof form.country === "string" && OBJECT_ID.test(form.country) ? form.country : undefined;
     const attribution: Record<string, string> = {};
     for (const key of CHECKOUT_ATTRIBUTION_KEYS) {
       const value = form[key];
       if (typeof value === "string" && value.trim() !== "") attribution[key] = value.trim().slice(0, ATTRIBUTION_MAX);
     }
-    return { offer, expectedTotalMinor, couponCode, paymentGateway, attribution: Object.keys(attribution).length > 0 ? attribution : undefined };
+    return { offer, expectedTotalMinor, couponCode, paymentGateway, country, attribution: Object.keys(attribution).length > 0 ? attribution : undefined };
   }
   type Purchase = ReturnType<typeof purchaseOf> & { offer: string };
+
+  /**
+   * The country to quote and start in: the one the page priced the shown total
+   * in, else the kit's `visitorCountry` (the geo header). Re-quoting in another
+   * country would show a non-member a false "member price". For a member the
+   * API still applies its own rule (the profile country first, A2).
+   */
+  async function countryFor(p: Purchase, req: RequestView): Promise<string | undefined> {
+    return p.country ?? (await visitorCountryOf(req));
+  }
 
   function failed(error: CheckoutFailure, reason: string | undefined): CodeStepPayment {
     if (error === "checkout_refused" && reason) return { kind: "payment-failed", reason };
@@ -446,7 +461,7 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     ];
     if (!purchase.offer) return paymentAnswer({ kind: "payment-failed", reason: UNAVAILABLE_REASON }, setCookies);
     const buyer = { checkoutProof: res.body.proof, buyerIp };
-    const answer = await payAfterVerify(buyer, purchase as Purchase, await visitorCountryOf(req));
+    const answer = await payAfterVerify(buyer, purchase as Purchase, await countryFor(purchase as Purchase, req));
     return paymentAnswer(answer, setCookies);
   }
 
@@ -459,7 +474,7 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     if (!proof) return paymentAnswer({ kind: "payment-failed", reason: "CHECKOUT_PROOF_INVALID" });
     const buyerIp = buyerIpOf(req);
     if (!buyerIp) return json(503, { reason: UNAVAILABLE_REASON } satisfies CodeStepRefusal);
-    const answer = await startWithProof({ checkoutProof: proof, buyerIp }, purchase as Purchase, purchase.expectedTotalMinor, await visitorCountryOf(req));
+    const answer = await startWithProof({ checkoutProof: proof, buyerIp }, purchase as Purchase, purchase.expectedTotalMinor, await countryFor(purchase as Purchase, req));
     return paymentAnswer(answer);
   }
 

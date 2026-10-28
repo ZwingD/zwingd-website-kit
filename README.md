@@ -64,7 +64,7 @@ The example site also reads `ZWINGD_COUNTRY_IDS`. That variable is the example's
 | `GET /session/code-step` | v0.2.0. The code step's form value (`formToken`, sent as `csrf`) and the open step a reload resumes (`pending`) |
 | `POST /session/code-start` | v0.2.0. Sends the buyer a code (`email`, `offer?`, `botToken?`). Same-site POST with `csrf` |
 | `POST /session/code-resend` | v0.2.0. A new code on the same ticket. Same-site POST with `csrf` |
-| `POST /session/code-verify` | v0.2.0. Checks the code (`code`, `firstName?`, `lastName?`, `acceptedDocuments?` as JSON, and the purchase: `offer`, `expectedTotalMinor`, `couponCode?`, `paymentGateway?`, attribution). Keeps the proof server-side, re-quotes with it, and starts payment or answers the new price. Creates no account and no session. Same-site POST with `csrf` |
+| `POST /session/code-verify` | v0.2.0. Checks the code (`code`, `firstName?`, `lastName?`, `acceptedDocuments?` as JSON, and the purchase: `offer`, `expectedTotalMinor`, `country?`, `couponCode?`, `paymentGateway?`, attribution). Keeps the proof server-side, re-quotes with it, and starts payment or answers the new price. Creates no account and no session. Same-site POST with `csrf` |
 | `POST /session/code-pay` | v0.2.0. "Pay {amount}" after the price changed: a start with the held proof at the shown total. Same-site POST with `csrf` |
 | `POST /session/checkout-continue` | v0.2.0. The thank-you button ("Continue sign-up" / "Go to my course"). Fetched by `CheckoutContinueButton` at the press: mints the one-time continue nonce and answers `{ nonce, continueUrl }` (or `400 { signInUrl }`). Same-site POST with `csrf` |
 
@@ -251,6 +251,7 @@ import { CODE_STEP_COPY, CodeStepLiveRegion, fillCopy, useCodeStep } from "@zwin
 const step = useCodeStep({
   offer,
   expectedTotalMinor,                 // the guest total the page showed
+  country,                            // the master-data country id that total was priced in (optional)
   storageKey: (id) => `mysite:checkout:order:${id}`,
   terms,                              // [{ type, version }] when the workspace requires terms
 });
@@ -266,6 +267,7 @@ step.resend(); step.changeEmail();
 ```
 
 - **Copy.** `CODE_STEP_COPY` is the signed copy (spec §8a), word for word. Restyle it; never reword it. `fillCopy(line, { email })` fills `{email}`, `{seconds}`, `{minutes}` and `{amount}`; draw your links to the legal documents where `{terms links}` is.
+- **Country.** Pass `country`, the master-data country id (24 hex, the same `_id` your guest quote and start take as `country`) that `expectedTotalMinor` was priced in, for example the one the buyer picked in your pop-up. The re-quote uses it, so a buyer who is not a member sees the same total and goes straight to payment. Without it the kit's `visitorCountry` setting (the geo header) is used. For a member the API still prices by the member's own profile country first (A2), so a member may see a changed total.
 - **After the code** the same request re-quotes with the proof. If the total is the one the page showed, the browser goes straight to payment ("Taking you to payment…"). If it changed (a member's price), the step shows "Your member price is {amount}." and a "Pay {amount}" button; nothing is charged until it is pressed. `already-owned` means the buyer has the course.
 - **Errors** are keyed by `reason`, and `state.error.field` names the input they belong to (`email`, `code`, `terms`, `payment`). The input props carry `aria-invalid` and `aria-describedby` with `step.ids`: draw the message with the matching id. A wrong or expired code stays on the step and focus goes back to the input; locked or rate-limited shows the wait; the resend cap shows its own line with the wait; terms required shows the tick box, focuses it and stays recoverable; an invalid email reads "Enter a valid email address."; anything else is the generic line.
 - **Expired code.** "Send a new code" on an expired ticket starts again with the email the step holds. No need to retype it.

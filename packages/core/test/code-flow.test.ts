@@ -277,6 +277,41 @@ test("code-verify, total unchanged: proof cookie (HttpOnly), NO session, re-quot
   assert.equal(calls.filter((c) => c.call === "checkout/drop-off").length, 1, "only code_sent: identity records verified (B5)");
 });
 
+const PICKED = "6520f1c2a3b4c5d6e7f80a05";
+
+test("country: the one the page priced in (picked ≠ geo) is quoted and started with; a non-member's same total goes straight to start", async () => {
+  const { kit, calls } = setup(
+    { ...START_OK, "code/verify": { status: 200, body: VERIFIED }, "checkout/quote": { status: 200, body: QUOTE("9900") }, "checkout/start": { status: 200, body: STARTED } },
+    { visitorCountry: () => COUNTRY },
+  );
+  const { cookies } = await started(kit);
+  const res = (await kit.handle(post("/session/code-verify", { code: "123456", ...PURCHASE, country: PICKED }, cookies)))!;
+  assert.equal(JSON.parse(res.body!).kind, "redirect", "no false member-price line");
+  assert.equal(calls.find((c) => c.call === "checkout/quote")!.body.visitorCountry, PICKED);
+  assert.equal(calls.find((c) => c.call === "checkout/start")!.body.visitorCountry, PICKED);
+});
+
+test("country: none posted (or not an id) falls back to the kit's visitorCountry; neither gives none", async () => {
+  const replies = { ...START_OK, "code/verify": { status: 200, body: VERIFIED }, "checkout/quote": { status: 200, body: QUOTE("9900") }, "checkout/start": { status: 200, body: STARTED } };
+  for (const form of [{}, { country: "IN" }] as Record<string, string>[]) {
+    const { kit, calls } = setup(replies, { visitorCountry: () => COUNTRY });
+    const { cookies } = await started(kit);
+    await kit.handle(post("/session/code-verify", { code: "123456", ...PURCHASE, ...form }, cookies));
+    assert.equal(calls.find((c) => c.call === "checkout/quote")!.body.visitorCountry, COUNTRY, JSON.stringify(form));
+    assert.equal(calls.find((c) => c.call === "checkout/start")!.body.visitorCountry, COUNTRY, JSON.stringify(form));
+  }
+  const bare = setup(replies);
+  const { cookies } = await started(bare.kit);
+  await bare.kit.handle(post("/session/code-verify", { code: "123456", ...PURCHASE }, cookies));
+  assert.ok(!("visitorCountry" in bare.calls.find((c) => c.call === "checkout/quote")!.body));
+});
+
+test("country: 'Pay {amount}' starts in the posted country too", async () => {
+  const { kit, calls } = setup({ "checkout/start": { status: 200, body: STARTED } }, { visitorCountry: () => COUNTRY });
+  await kit.handle(post("/session/code-pay", { offer: OFFER, expectedTotalMinor: "7900", country: PICKED }, { "__Host-zw_proof": PROOF }));
+  assert.equal(calls.find((c) => c.call === "checkout/start")!.body.visitorCountry, PICKED);
+});
+
 test("A2: a changed total (member price) is shown first: confirm-price, and NO start", async () => {
   const { kit, calls } = setup({ ...START_OK, "code/verify": { status: 200, body: VERIFIED }, "checkout/quote": { status: 200, body: QUOTE("7900") } });
   const { cookies } = await started(kit);
