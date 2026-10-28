@@ -46,7 +46,7 @@ Your **server** environment holds these. None of them may reach the browser, so 
 | `ZWINGD_INSECURE_LOCAL_COOKIES` | `true` for local development on `http://localhost` only. The kit refuses it when `NODE_ENV=production` |
 | `ZWINGD_APP_SIGN_IN` | v0.2.0, default `off`. `on` once the workspace's app serves `/session/claim`: `/session/app` then signs a code-verified buyer in to the app (section 7a) |
 
-v0.2.0 also takes `buyerIpFrom(headers)` in code (not an environment name): how your server finds the buyer's IP for the code step. The default reads the first `x-forwarded-for` hop, else `x-real-ip`, which is right only behind a proxy that overwrites them (Vercel, a load balancer). Behind anything else, pass your own.
+v0.2.0 also takes `buyerIpFrom(headers)` in code (not an environment name): how your server finds the buyer's IP for the code step. The default reads `x-real-ip`, else the last `x-forwarded-for` hop (both written by your own proxy; the first hop is whatever the browser sent), which is right on Vercel or behind one load balancer. Behind anything else, pass your own.
 
 The example site also reads `ZWINGD_COUNTRY_IDS`. That variable is the example's own way to price by the visitor's country (section 7), not a kit setting.
 

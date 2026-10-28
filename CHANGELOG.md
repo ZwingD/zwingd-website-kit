@@ -13,7 +13,7 @@ Checkout v3.1: verify the buyer's email before payment (ZwingD/zwingd-backend#19
   - `GET /session/app?to=` (saved-path rule): 303 to the app's `/session/claim` when `appSignIn` is on and the buyer is signed in, else to the plain app address. `GET /session/app-code?state=&code_challenge=`: the app's claim gets a one-time code (`<appUrl>/session/claim/callback?code=&state=`) or `error=login_required`; `no-store`, `no-referrer`.
   - `POST /session/end` also clears `__Host-zw_new` and `__Host-zw_ticket`.
   - Drop-off: after start (`code_sent`) and verify (`verified`) the kit reports the stage when the step has an `offer`; fire-and-forget.
-- Config: `buyerIpFrom(headers)` (default `forwardedBuyerIp`: first `x-forwarded-for` hop, else `x-real-ip`) and `appSignIn` (default false; `ZWINGD_APP_SIGN_IN=on` through `configFromEnv`).
+- Config: `buyerIpFrom(headers)` (default `forwardedBuyerIp`: `x-real-ip`, else the last `x-forwarded-for` hop; never the browser-set first hop) and `appSignIn` (default false; `ZWINGD_APP_SIGN_IN=on` through `configFromEnv`).
 - `@zwingd-ce/website-kit-next/server`: `isNewAccountBuyer(kit)`.
 - `@zwingd-ce/website-kit-next/client`: `useCodeStep()` (headless: email → sending → code → verifying → verified; countdown; errors by reason; double-submit guard; focus on the code input), `createCodeStepClient`, and from the core `CODE_STEP_COPY` (the spec's copy, word for word), `fillCopy`, `codeStepReducer`, `resendCountdown`, `appLinkHref(to)`.
 - `CookieNames` gains `newAccount` and `ticket`.

@@ -39,7 +39,7 @@ const post = (path: string, form: Record<string, string>, cookies: Record<string
     method: "POST",
     url: `${ORIGIN}${path}`,
     cookies: { "__Host-zw_csrf": CSRF, ...cookies },
-    headers: { origin: ORIGIN, "sec-fetch-site": "same-origin", "x-forwarded-for": `${IP}, 10.0.0.1`, ...headers },
+    headers: { origin: ORIGIN, "sec-fetch-site": "same-origin", "x-forwarded-for": `198.51.100.99, ${IP}`, ...headers },
     form: { csrf: CSRF, ...form },
   });
 
@@ -308,4 +308,12 @@ test("/session/app-code without a session (or refused, or off) is error=login_re
   assert.equal(off.calls.length, 0);
   const badState = (await kit.handle(req({ url: `${ORIGIN}/session/app-code?state=bad&code_challenge=${CHALLENGE}`, cookies: { "__Host-zw_session": TOKEN } })))!;
   assert.equal(badState.status, 400);
+});
+
+test("buyerIp default: x-real-ip, else the LAST x-forwarded-for hop; a browser-sent first hop is never used (PR #17 review)", async () => {
+  const { forwardedBuyerIp } = await import("../src/config.ts");
+  assert.equal(forwardedBuyerIp({ "x-forwarded-for": "198.51.100.99, 203.0.113.7" }), "203.0.113.7");
+  assert.equal(forwardedBuyerIp({ "x-real-ip": "203.0.113.8", "x-forwarded-for": "198.51.100.99, 203.0.113.7" }), "203.0.113.8");
+  assert.equal(forwardedBuyerIp({ "x-forwarded-for": "not-an-ip" }), null);
+  assert.equal(forwardedBuyerIp({}), null);
 });

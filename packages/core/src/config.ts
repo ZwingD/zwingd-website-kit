@@ -43,9 +43,9 @@ export interface WebsiteKitConfigInput {
   /**
    * v0.2.0 code step: the buyer's own IP from the request headers (lower-case
    * names), forwarded to the code calls as `buyerIp` (the code budget's
-   * requester). Default `forwardedBuyerIp`: the first `x-forwarded-for` hop,
-   * else `x-real-ip`, which is right only behind a proxy that overwrites them
-   * (Vercel, a load balancer). Anything that is not an IP is ignored.
+   * requester). Default `forwardedBuyerIp`: `x-real-ip`, else the LAST
+   * `x-forwarded-for` hop (both set by the site's own proxy; never the first
+   * hop, which the browser controls). Behind more than one proxy, pass your own. Anything that is not an IP is ignored.
    */
   buyerIpFrom?: BuyerIpResolver;
   /**
@@ -150,11 +150,18 @@ export function ipOf(value: unknown): string | null {
   return null;
 }
 
-/** The default `buyerIpFrom`: the first `x-forwarded-for` hop, else `x-real-ip`. */
+/**
+ * The default `buyerIpFrom`: `x-real-ip`, else the LAST `x-forwarded-for` hop. Both are written by the site's own
+ * proxy; the first hop is whatever the browser sent, so a caller could rotate it on every request and dodge the
+ * per-requester code budget (spec v3.1 §4.4; PR #17 review). A site behind more than one proxy sets `buyerIpFrom`.
+ */
 export function forwardedBuyerIp(headers: Record<string, string | undefined>): string | null {
+  const real = ipOf(headers["x-real-ip"]);
+  if (real) return real;
   const forwarded = headers["x-forwarded-for"];
-  if (typeof forwarded === "string" && forwarded.trim() !== "") return ipOf(forwarded.split(",")[0]);
-  return ipOf(headers["x-real-ip"]);
+  if (typeof forwarded !== "string" || forwarded.trim() === "") return null;
+  const hops = forwarded.split(",").map((hop) => hop.trim()).filter(Boolean);
+  return ipOf(hops[hops.length - 1]);
 }
 
 /** Check and complete the settings once, at start-up. */

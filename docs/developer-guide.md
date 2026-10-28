@@ -80,7 +80,7 @@ Your **server** environment holds these. None of them may reach the browser. On 
 | `ZWINGD_INSECURE_LOCAL_COOKIES` | `true` for local development on `http://localhost` only. The kit refuses it when `NODE_ENV=production` | Local development |
 | `ZWINGD_APP_SIGN_IN` | `on` once the workspace's app serves `/session/claim` (v0.2.0); default `off` | App sign-in after the code step |
 
-The code step (v0.2.0) also needs the buyer's IP. The kit's default `buyerIpFrom` reads the first `x-forwarded-for` hop, else `x-real-ip`. That is right on Vercel and behind a load balancer that overwrites the header. Anywhere else, pass `buyerIpFrom` to `configFromEnv`.
+The code step (v0.2.0) also needs the buyer's IP. The kit's default `buyerIpFrom` reads `x-real-ip`, else the last `x-forwarded-for` hop (both written by your own proxy; the first hop is whatever the browser sent). That is right on Vercel and behind one load balancer. Anywhere else, pass `buyerIpFrom` to `configFromEnv`.
 
 The kit checks every setting when it starts. A missing or malformed one throws `WebsiteKitConfigError`, which names the setting and never its value.
 
