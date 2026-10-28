@@ -1,77 +1,164 @@
 "use client";
 /**
- * The code step before payment (checkout v3.1, spec §6) as a headless hook:
- * the page draws the step its own way, the kit runs it.
+ * The code step before payment (checkout v3.2, spec §8, §8a, A2) as a
+ * headless hook: the page draws the step its own way, the kit runs it.
  *
- *   const step = useCodeStep({ offer });
- *   step.sendCode(email)          // email → sending → code
- *   step.verify(code, { acceptedDocuments })  // code → verifying → verified
- *   step.resend(), step.changeEmail()
- *   step.state.error?.message     // the spec's line for the refusal
- *   step.resendLabel              // "Send a new code in 42s" / "Send a new code"
- *   <input ref={step.codeInputRef} autoComplete="one-time-code" inputMode="numeric" />
+ *   const step = useCodeStep({ offer, expectedTotalMinor, storageKey, terms });
+ *   <input {...step.emailInputProps} value={email} onChange={...} />
+ *   step.sendCode(email)                 // email → sending → code (focus moves to the code input)
+ *   <input {...step.codeInputProps} />   // one input: paste "123 456" works; Tab leaves it
+ *   <input {...step.termsInputProps} />  // "I agree to the {terms links}." when the workspace requires terms
+ *   step.verify()                        // code → verifying → paying (straight to payment)
+ *                                        //                 → confirm-price ("Your member price is {amount}.")
+ *   step.pay()                           // "Pay {amount}" → paying
+ *   <CodeStepLiveRegion step={step} />   // the polite countdown / "Taking you to payment…" region
  *
- * After `verified` the buyer is signed in on the website (the kit set the
- * session cookie): continue as a member (member quote, `startMemberCheckout`
- * with `state.signOutToken`). `state.notice === "account-ready"` shows "Your
- * account is ready." once; never store it or send it anywhere.
+ * The code step creates no account and no session. The proof stays on the
+ * site's server (HttpOnly cookie): nothing here ever sees it. The order token
+ * is kept in this tab's sessionStorage under `storageKey` before the browser
+ * goes to payment, as for member checkout.
  *
  * The form value (`csrf`) comes from GET /session/code-step unless given, and
  * the same read resumes an open step after a reload (the ticket cookie).
  */
-import { useCallback, useEffect, useReducer, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useId, useReducer, useRef, useState, type ChangeEvent, type RefObject } from "react";
 
 import {
+  CHECKOUT_ATTRIBUTION_KEYS,
+  CODE_STEP_COPY,
+  codeStepAnnouncement,
   codeStepReducer,
+  fillCopy,
+  formatAmount,
   initialCodeStep,
+  normalizeCode,
   resendCountdown,
+  storeCheckoutOrder,
   UNAVAILABLE_REASON,
   type AcceptedDocument,
+  type CheckoutAttribution,
+  type CheckoutStorage,
+  type CodeStepPayment,
+  type CodeStepPrice,
   type CodeStepRead,
   type CodeStepRefusal,
   type CodeStepState,
   type CodeStepTicket,
-  type CodeStepVerified,
 } from "@zwingd-ce/website-kit";
 
 export interface UseCodeStepOptions {
+  /** The offer being bought (24 hex). */
+  offer: string;
+  /** The total the page showed (minor units). Unchanged after the re-quote → straight to payment (A2). */
+  expectedTotalMinor: string;
+  paymentGateway?: string;
+  couponCode?: string;
+  attribution?: CheckoutAttribution;
+  /** The site's sessionStorage key for an order, exactly as its return page reads it. */
+  storageKey: (orderId: string) => string;
+  /** The course page the buyer started on, kept in the order record. */
+  coursePath?: string | null;
+  /**
+   * The workspace's legal documents when it requires terms: the tick box
+   * shows, and a ticked box sends them as `acceptedDocuments`. Same for every
+   * buyer, new or existing (no enumeration).
+   */
+  terms?: AcceptedDocument[];
   /** Where the kit's routes are mounted. Default `/session`. */
   basePath?: string;
   /** The `csrf` value, when the page already has it; else read from GET /session/code-step. */
   formToken?: string | null;
-  /** The offer being bought (24 hex), for the drop-off report. */
-  offer?: string;
   /** Resume an open step after a reload. Default true. */
   resume?: boolean;
   /** The email to start with (e.g. what the buyer typed before). */
   initialEmail?: string;
-  /** For tests. */
+  /** How `{amount}` reads. Default `formatAmount(price, "en-US")`. */
+  formatAmount?: (price: CodeStepPrice) => string;
+  /** For tests and other runtimes. Defaults: the global `fetch`, `sessionStorage`, `location.assign`, `Date.now`. */
   fetch?: typeof fetch;
+  storage?: CheckoutStorage | null;
+  navigate?: (url: string) => void;
   now?: () => number;
 }
 
 export interface VerifyExtras {
   firstName?: string;
   lastName?: string;
-  /** The workspace's legal documents the step showed (spec §2a). */
-  acceptedDocuments?: AcceptedDocument[];
+}
+
+/** The ids the step's inputs and lines use, so each error is tied to its input. */
+export interface CodeStepIds {
+  email: string;
+  emailError: string;
+  code: string;
+  codeHint: string;
+  codeError: string;
+  terms: string;
+  termsError: string;
+  paymentError: string;
 }
 
 export interface CodeStep {
   state: CodeStepState;
+  /** The code typed or pasted so far: digits only, at most the code's length. */
+  code: string;
+  setCode(value: string): void;
   /** Seconds until "Send a new code" is ready. */
   secondsLeft: number;
-  /** "Send a new code in {seconds}s" or "Send a new code". */
+  /** "Send a new code in {seconds}s" or "Send a new code" (visible; NOT a live region). */
   resendLabel: string;
   canResend: boolean;
-  /** True while a send, resend or verify is in flight: disable the buttons. */
+  /** What the polite live region says: at the countdown's start, when it is ready, and "Taking you to payment…". */
+  announcement: string;
+  /** True while a send, resend, verify or pay is in flight: disable the buttons. */
   busy: boolean;
+  /** `confirm-price`: the member price as text, "Your member price is {amount}." and "Pay {amount}". */
+  amount: string | null;
+  priceLine: string | null;
+  payLabel: string | null;
   sendCode(email: string, extras?: { botToken?: string }): Promise<void>;
   resend(): Promise<void>;
-  verify(code: string, extras?: VerifyExtras): Promise<void>;
+  verify(extras?: VerifyExtras): Promise<void>;
+  pay(): Promise<void>;
   changeEmail(): void;
-  /** Put it on the code input: focus moves there when the step opens and after an invalid or expired code. */
+  setTermsAccepted(accepted: boolean): void;
+  ids: CodeStepIds;
   codeInputRef: RefObject<HTMLInputElement | null>;
+  termsInputRef: RefObject<HTMLInputElement | null>;
+  /** Spread on the email input (the page keeps its value). */
+  emailInputProps: {
+    id: string;
+    name: "email";
+    type: "email";
+    autoComplete: "email";
+    "aria-invalid": boolean;
+    "aria-describedby": string | undefined;
+  };
+  /** Spread on the ONE code input. No `maxLength`: a pasted "123 456" is stripped first, then cut to length. */
+  codeInputProps: {
+    id: string;
+    name: "code";
+    ref: RefObject<HTMLInputElement | null>;
+    value: string;
+    onChange(event: ChangeEvent<HTMLInputElement>): void;
+    type: "text";
+    autoComplete: "one-time-code";
+    inputMode: "numeric";
+    "aria-invalid": boolean;
+    "aria-describedby": string;
+  };
+  /** Spread on the terms tick box (draw it when `state.termsRequired`). */
+  termsInputProps: {
+    id: string;
+    name: "terms";
+    ref: RefObject<HTMLInputElement | null>;
+    type: "checkbox";
+    checked: boolean;
+    onChange(event: ChangeEvent<HTMLInputElement>): void;
+    required: true;
+    "aria-invalid": boolean;
+    "aria-describedby": string | undefined;
+  };
 }
 
 type Answer<T> = { ok: true; body: T } | { ok: false; refusal: CodeStepRefusal };
@@ -113,15 +200,28 @@ export function createCodeStepClient(options: { basePath?: string; fetch?: typeo
     },
     start: (form: Record<string, string>) => postForm<CodeStepTicket>("code-start", form),
     resend: (form: Record<string, string>) => postForm<CodeStepTicket>("code-resend", form),
-    verify: (form: Record<string, string>) => postForm<CodeStepVerified>("code-verify", form),
+    verify: (form: Record<string, string>) => postForm<CodeStepPayment>("code-verify", form),
+    pay: (form: Record<string, string>) => postForm<CodeStepPayment>("code-pay", form),
   };
 }
 
-export function useCodeStep(options: UseCodeStepOptions = {}): CodeStep {
+function isPayment(value: unknown): value is CodeStepPayment {
+  const v = value as Record<string, unknown> | null;
+  if (!v || typeof v !== "object") return false;
+  if (v.kind === "redirect") return typeof v.url === "string" && /^https?:\/\//.test(v.url) && typeof v.orderId === "string";
+  if (v.kind === "confirm-price") return typeof v.totalMinor === "string" && typeof v.currencyCode === "string" && typeof v.minorUnitExponent === "number";
+  if (v.kind === "payment-failed") return typeof v.reason === "string";
+  return v.kind === "already-owned";
+}
+
+export function useCodeStep(options: UseCodeStepOptions): CodeStep {
   const now = options.now ?? Date.now;
-  const [state, dispatch] = useReducer(codeStepReducer, options.initialEmail ?? "", initialCodeStep);
+  const termsRequired = (options.terms?.length ?? 0) > 0;
+  const [state, dispatch] = useReducer(codeStepReducer, { email: options.initialEmail ?? "", termsRequired }, initialCodeStep);
+  const [code, setCodeValue] = useState("");
   const [clock, setClock] = useState(() => now());
   const codeInputRef = useRef<HTMLInputElement | null>(null);
+  const termsInputRef = useRef<HTMLInputElement | null>(null);
   const inFlight = useRef(false);
   const token = useRef<string | null>(options.formToken ?? null);
   const clientRef = useRef<ReturnType<typeof createCodeStepClient> | null>(null);
@@ -129,6 +229,22 @@ export function useCodeStep(options: UseCodeStepOptions = {}): CodeStep {
   const client = clientRef.current;
   const stateRef = useRef(state);
   stateRef.current = state;
+  const codeRef = useRef(code);
+  codeRef.current = code;
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+
+  const uid = useId().replace(/:/g, "");
+  const ids: CodeStepIds = {
+    email: `zw-${uid}-email`,
+    emailError: `zw-${uid}-email-error`,
+    code: `zw-${uid}-code`,
+    codeHint: `zw-${uid}-code-hint`,
+    codeError: `zw-${uid}-code-error`,
+    terms: `zw-${uid}-terms`,
+    termsError: `zw-${uid}-terms-error`,
+    paymentError: `zw-${uid}-payment-error`,
+  };
 
   useEffect(() => {
     if (options.formToken) token.current = options.formToken;
@@ -141,7 +257,7 @@ export function useCodeStep(options: UseCodeStepOptions = {}): CodeStep {
     void client.read().then((read) => {
       if (!live || !read) return;
       token.current ??= read.formToken;
-      if (options.resume !== false && read.pending) dispatch({ type: "restore", pending: read.pending });
+      if (options.resume !== false && read.pending) dispatch({ type: "restore", pending: read.pending, now: now() });
     });
     return () => {
       live = false;
@@ -150,7 +266,7 @@ export function useCodeStep(options: UseCodeStepOptions = {}): CodeStep {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // The countdown ticks once a second while it runs.
+  // The countdown ticks once a second while it runs (the visible label only).
   const waiting = state.step === "code" && state.resendAvailableAt !== null && state.resendAvailableAt > clock;
   useEffect(() => {
     if (!waiting) return;
@@ -163,9 +279,17 @@ export function useCodeStep(options: UseCodeStepOptions = {}): CodeStep {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.resendAvailableAt, state.step]);
 
+  // Focus moves to the code input when the step opens and after an invalid or expired code.
   useEffect(() => {
     if (state.focusCode > 0) codeInputRef.current?.focus();
   }, [state.focusCode]);
+  useEffect(() => {
+    if (state.focusTerms > 0) termsInputRef.current?.focus();
+  }, [state.focusTerms]);
+  // A new code to type: the old one is cleared.
+  useEffect(() => {
+    if (state.focusCode > 0 && state.error === null) setCodeValue("");
+  }, [state.focusCode, state.error]);
 
   async function formToken(): Promise<string | null> {
     if (token.current) return token.current;
@@ -185,6 +309,41 @@ export function useCodeStep(options: UseCodeStepOptions = {}): CodeStep {
     }
   }
 
+  function purchaseForm(expectedTotalMinor: string): Record<string, string> {
+    const o = optionsRef.current;
+    const form: Record<string, string> = { offer: o.offer, expectedTotalMinor };
+    if (o.paymentGateway) form.paymentGateway = o.paymentGateway;
+    if (o.couponCode) form.couponCode = o.couponCode;
+    for (const key of CHECKOUT_ATTRIBUTION_KEYS) {
+      const value = o.attribution?.[key];
+      if (typeof value === "string" && value !== "") form[key] = value;
+    }
+    return form;
+  }
+
+  /** The verify or pay answer: keep the order, then go to payment; or show what came back. */
+  function settle(answer: Answer<CodeStepPayment>): void {
+    if (!answer.ok) return dispatch({ type: "failed", refusal: answer.refusal, now: now() });
+    const a = answer.body;
+    if (!isPayment(a)) return dispatch({ type: "failed", refusal: { reason: UNAVAILABLE_REASON }, now: now() });
+    if (a.kind !== "redirect") return dispatch({ type: "answered", answer: a });
+    const o = optionsRef.current;
+    const kept = storeCheckoutOrder(a, {
+      storageKey: o.storageKey,
+      coursePath: o.coursePath ?? null,
+      member: false,
+      ...(o.storage === undefined ? {} : { storage: o.storage }),
+    });
+    if (!kept) {
+      // A settled order is the buyer's now, whatever happened to its token (kit #5).
+      if (a.settled) return dispatch({ type: "answered", answer: { kind: "already-owned", settled: true } });
+      return dispatch({ type: "answered", answer: { kind: "payment-failed", reason: "STORAGE_UNAVAILABLE" } });
+    }
+    dispatch({ type: "answered", answer: a });
+    const navigate = o.navigate ?? ((url: string) => (globalThis as { location?: { assign(u: string): void } }).location?.assign(url));
+    navigate(a.url);
+  }
+
   const sendCode = useCallback(
     (email: string, extras: { botToken?: string } = {}) =>
       once(async () => {
@@ -195,13 +354,13 @@ export function useCodeStep(options: UseCodeStepOptions = {}): CodeStep {
         const res = await client.start({
           csrf,
           email: email.trim(),
-          ...(options.offer ? { offer: options.offer } : {}),
+          offer: optionsRef.current.offer,
           ...(extras.botToken ? { botToken: extras.botToken } : {}),
         });
         dispatch(res.ok ? { type: "sent", ticket: res.body, now: now() } : { type: "failed", refusal: res.refusal });
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [options.offer],
+    [],
   );
 
   const resend = useCallback(
@@ -212,54 +371,125 @@ export function useCodeStep(options: UseCodeStepOptions = {}): CodeStep {
         dispatch({ type: "resend" });
         const csrf = await formToken();
         if (!csrf) return dispatch({ type: "failed", refusal: { reason: UNAVAILABLE_REASON } });
-        const res = await client.resend({ csrf });
-        dispatch(res.ok ? { type: "sent", ticket: res.body, now: now() } : { type: "failed", refusal: res.refusal });
+        let res = await client.resend({ csrf });
+        // §8: the ticket is gone altogether (cookie lost) → start again with the email the step holds.
+        if (!res.ok && res.refusal.reason === "WEBSITE_CODE_EXPIRED" && s.email) {
+          res = await client.start({ csrf, email: s.email, offer: optionsRef.current.offer });
+        }
+        dispatch(res.ok ? { type: "sent", ticket: res.body, now: now() } : { type: "failed", refusal: res.refusal, now: now() });
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
   const verify = useCallback(
-    (code: string, extras: VerifyExtras = {}) =>
+    (extras: VerifyExtras = {}) =>
       once(async () => {
         const s = stateRef.current;
         if (s.step !== "code" || s.resending) return;
         dispatch({ type: "verify" });
+        const o = optionsRef.current;
+        // Terms required and not ticked: say so here, without spending a guess.
+        if (s.termsRequired && !s.termsAccepted) return dispatch({ type: "failed", refusal: { reason: "WEBSITE_TERMS_REQUIRED" } });
         const csrf = await formToken();
         if (!csrf) return dispatch({ type: "failed", refusal: { reason: UNAVAILABLE_REASON } });
+        const docs = s.termsAccepted ? (o.terms ?? []) : [];
         const res = await client.verify({
           csrf,
-          code: code.replace(/\s+/g, ""),
+          code: normalizeCode(codeRef.current, s.codeLength),
           ...(extras.firstName ? { firstName: extras.firstName } : {}),
           ...(extras.lastName ? { lastName: extras.lastName } : {}),
-          ...(extras.acceptedDocuments && extras.acceptedDocuments.length > 0 ? { acceptedDocuments: JSON.stringify(extras.acceptedDocuments) } : {}),
+          ...(docs.length > 0 ? { acceptedDocuments: JSON.stringify(docs) } : {}),
+          ...purchaseForm(o.expectedTotalMinor),
         });
-        if (res.ok) {
-          token.current = res.body.signOutToken;
-          dispatch({ type: "verified", answer: res.body });
-        } else {
-          dispatch({ type: "failed", refusal: res.refusal });
-        }
+        settle(res);
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  const pay = useCallback(
+    () =>
+      once(async () => {
+        const s = stateRef.current;
+        if (s.step !== "confirm-price" && s.step !== "pay-failed") return;
+        dispatch({ type: "pay" });
+        const csrf = await formToken();
+        if (!csrf) return dispatch({ type: "failed", refusal: { reason: UNAVAILABLE_REASON } });
+        // The price the buyer was shown: the member price, else the page's own.
+        const total = s.price?.totalMinor ?? optionsRef.current.expectedTotalMinor;
+        settle(await client.pay({ csrf, ...purchaseForm(total) }));
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
   const changeEmail = useCallback(() => {
-    if (!inFlight.current) dispatch({ type: "changeEmail" });
+    if (!inFlight.current) {
+      setCodeValue("");
+      dispatch({ type: "changeEmail" });
+    }
   }, []);
 
+  const setTermsAccepted = useCallback((accepted: boolean) => dispatch({ type: "terms", accepted }), []);
+  const setCode = useCallback((value: string) => setCodeValue(normalizeCode(value, stateRef.current.codeLength)), []);
+
   const countdown = resendCountdown(state, clock);
+  const amount = state.step === "confirm-price" && state.price ? (options.formatAmount ?? ((p: CodeStepPrice) => formatAmount(p)))(state.price) : null;
+  const err = state.error;
+  const describedBy = (...list: (string | false | undefined)[]) => list.filter(Boolean).join(" ") || undefined;
+
   return {
     state,
+    code,
+    setCode,
     secondsLeft: countdown.seconds,
     resendLabel: countdown.label,
     canResend: countdown.canResend,
-    busy: state.step === "sending" || state.step === "verifying" || state.resending,
+    announcement: codeStepAnnouncement(state, clock),
+    busy: state.step === "sending" || state.step === "verifying" || state.step === "paying" || state.resending,
+    amount,
+    priceLine: amount === null ? null : fillCopy(CODE_STEP_COPY.memberPrice, { amount }),
+    payLabel: amount === null ? null : fillCopy(CODE_STEP_COPY.payButton, { amount }),
     sendCode,
     resend,
     verify,
+    pay,
     changeEmail,
+    setTermsAccepted,
+    ids,
     codeInputRef,
+    termsInputRef,
+    emailInputProps: {
+      id: ids.email,
+      name: "email",
+      type: "email",
+      autoComplete: "email",
+      "aria-invalid": err?.field === "email",
+      "aria-describedby": describedBy(err?.field === "email" && ids.emailError),
+    },
+    codeInputProps: {
+      id: ids.code,
+      name: "code",
+      ref: codeInputRef,
+      value: code,
+      onChange: (event) => setCode(event.target.value),
+      type: "text",
+      autoComplete: "one-time-code",
+      inputMode: "numeric",
+      "aria-invalid": err?.field === "code",
+      "aria-describedby": describedBy(err?.field === "code" && ids.codeError, ids.codeHint)!,
+    },
+    termsInputProps: {
+      id: ids.terms,
+      name: "terms",
+      ref: termsInputRef,
+      type: "checkbox",
+      checked: state.termsAccepted,
+      onChange: (event) => setTermsAccepted(event.target.checked),
+      required: true,
+      "aria-invalid": err?.field === "terms",
+      "aria-describedby": describedBy(err?.field === "terms" && ids.termsError),
+    },
   };
 }

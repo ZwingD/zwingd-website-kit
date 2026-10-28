@@ -1,78 +1,100 @@
 /**
- * Checkout v3.1: the buyer verifies their email by code before payment
- * (spec §4, §6), and the app signs in from that website session (§6.5).
+ * Checkout v3.2: the buyer proves their email by code before payment (spec
+ * §4, §8, §10b A1-A3). The code step creates NO account and NO session: a
+ * right code gives the site's server a verified-email proof, held only in the
+ * HttpOnly `__Host-zw_proof` cookie, and payment goes ahead against it.
  *
- *   GET  /session/code-step     same-origin read: the form value (`csrf`) for
- *                               the code step, and the open step a reload resumes.
- *   POST /session/code-start    same-site POST + CSRF. `email`, `offer?`, `botToken?`.
- *   POST /session/code-resend   same-site POST + CSRF.
- *   POST /session/code-verify   same-site POST + CSRF. `code`, `firstName?`,
- *                               `lastName?`, `acceptedDocuments?` (JSON).
- *                               Sets the session like /session/callback, and
- *                               `__Host-zw_new=1` only for a new account.
- *   GET  /session/app?to=       303 to the app's claim (appSignIn on, signed in),
- *                               else to the plain app address. Saved-path rule.
- *   GET  /session/app-code      the app's claim asks for a one-time code: 302 to
- *                               `<appUrl>/session/claim/callback?code=&state=`
- *                               or `?error=login_required&state=`.
+ *   GET  /session/code-step          same-origin read: the form value (`csrf`)
+ *                                    and the open step a reload resumes.
+ *   POST /session/code-start         same-site POST + CSRF. `email`, `offer?`, `botToken?`.
+ *   POST /session/code-resend        same-site POST + CSRF. An expired ticket
+ *                                    starts again with the stored email (§8).
+ *   POST /session/code-verify        same-site POST + CSRF. `code`, `firstName?`,
+ *                                    `lastName?`, `acceptedDocuments?` (JSON) and
+ *                                    the purchase (`offer`, `expectedTotalMinor`,
+ *                                    `couponCode?`, `paymentGateway?`, attribution).
+ *                                    Verify → proof cookie → re-quote with the
+ *                                    proof → unchanged total: `checkout/start`
+ *                                    at once; changed: `confirm-price` (A2).
+ *   POST /session/code-pay           same-site POST + CSRF. "Pay {amount}": a
+ *                                    start with the proof at the shown total.
+ *   POST /session/checkout-continue  same-site POST + CSRF, the thank-you
+ *                                    button. Mints the 60 s continue nonce NOW
+ *                                    (never on a page load) and answers a page
+ *                                    whose form POSTs it to the app (A3).
  *
- * ⛔ `isNewAccount` never reaches the browser: the verify answers only
- * `notice: 'account-ready' | null`, and the flag lives in the HttpOnly cookie.
+ * ⛔ The proof never reaches page JavaScript or an address: only the server
+ * reads the cookie, and no answer carries it. The nonce goes only into the
+ * body of a form POST, never into a URL.
  * ⛔ The ticket lives only in the HttpOnly ticket cookie; nothing here logs an
- * email, a code, a ticket or a token.
+ * email, a code, a ticket, a proof or a nonce.
  */
 import {
-  appCode,
+  checkoutQuote,
+  checkoutStart,
   codeResend,
   codeStart,
   codeVerify,
-  isSessionToken,
+  proofContext,
+  proofContinue,
+  PROOF_PATTERN,
   reportDropOff,
   type AcceptedDocument,
+  type CheckoutFailure,
   type CodeResult,
   type CodeTicket,
-  type DropOffStage,
+  type ContinueAs,
+  type MemberQuoteInput,
+  type MemberStartInput,
 } from "./api-client.ts";
-import type { CodeStepRefusal, CodeStepTicket, CodeStepVerified, PendingCodeStep } from "./code-step.ts";
-import { UNAVAILABLE_REASON } from "./code-step.ts";
+import { CHECKOUT_ATTRIBUTION_KEYS, CHECKOUT_RETURN_PATH } from "./checkout.ts";
+import type { CodeStepPayment, CodeStepRefusal, CodeStepTicket, PendingCodeStep } from "./code-step.ts";
+import { CODE_STEP_COPY, UNAVAILABLE_REASON } from "./code-step.ts";
 import { ipOf, type WebsiteKitConfig } from "./config.ts";
 import { clearCookie, serializeCookie, TICKET_COOKIE_MAX_AGE_S, type CookieNames } from "./cookies.ts";
 import type { RequestView, ResponseView } from "./flows.ts";
-import type { MemberReader } from "./member.ts";
-import { base64url, STATE_PATTERN } from "./pkce.ts";
+import { base64url } from "./pkce.ts";
 import { sameSitePost } from "./same-site.ts";
-import { savedPath } from "./saved-path.ts";
 
 export const CODE_PATHS = Object.freeze({
   codeStep: "/session/code-step",
   codeStart: "/session/code-start",
   codeResend: "/session/code-resend",
   codeVerify: "/session/code-verify",
-  app: "/session/app",
-  appCode: "/session/app-code",
+  codePay: "/session/code-pay",
+  checkoutContinue: "/session/checkout-continue",
 });
-
-/** The site's link to the app: through `/session/app`, which picks the claim or the plain address. */
-export function appLinkHref(to: unknown): string {
-  return `${CODE_PATHS.app}?to=${encodeURIComponent(savedPath(to))}`;
-}
 
 /** What GET /session/code-step answers. */
 export interface CodeStepRead {
-  /** The value the code step's POSTs send as `csrf`. */
+  /** The value the code step's POSTs (and the thank-you button) send as `csrf`. */
   formToken: string;
   /** The open step from the ticket cookie, or null. */
   pending: PendingCodeStep | null;
 }
 
+/** The thank-you button the server picked from the proof context (§8 step 4). Never the proof itself. */
+export interface CheckoutContinue {
+  continueAs: ContinueAs;
+  /** "Continue sign-up" or "Go to my course" (§8a). */
+  label: string;
+  /** Where the button's form POSTs (with `csrf`): the kit's own route. */
+  action: string;
+}
+
 const EMAIL = /^[^\s@]{1,64}@[^\s@]{1,253}$/;
 const OBJECT_ID = /^[0-9a-f]{24}$/;
 const DIGITS = /^\d{1,12}$/;
-const CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
+const EXPECTED_TOTAL = /^\d{1,18}$/;
+// eslint-disable-next-line no-control-regex
+const COUPON = /^[^\u0000-\u001f\u007f]{1,64}$/;
 const BOT_TOKEN_MAX = 4096;
 const NAME_MAX = 60;
 const DOCS_MAX = 10;
 const DOC_VALUE_MAX = 64;
+const ATTRIBUTION_MAX = 200;
+/** Refusals of a checkout call with a proof after which the proof is no good: the cookie is dropped. */
+const PROOF_GONE = new Set(["CHECKOUT_PROOF_INVALID", "CHECKOUT_PROOF_EMAIL_MISMATCH", "EMAIL_VERIFICATION_REQUIRED"]);
 
 interface TicketCookie {
   t: string;
@@ -91,13 +113,13 @@ function json(status: number, body: unknown, setCookies: string[] = []): Respons
 
 const methodNotAllowed = (allow: string): ResponseView => ({ status: 405, headers: { ...baseHeaders(), Allow: allow }, setCookies: [] });
 const forbidden = (): ResponseView => ({ status: 403, headers: baseHeaders(), setCookies: [] });
-const redirect = (status: 302 | 303, location: string): ResponseView => ({ status, headers: { ...baseHeaders(), Location: location }, setCookies: [] });
 
 function encodeTicket(value: TicketCookie): string {
   return base64url(new TextEncoder().encode(JSON.stringify(value)));
 }
 
-function decodeTicket(raw: string | undefined, now: number): TicketCookie | null {
+/** The ticket cookie, kept after the code itself has expired (`x` in the past) so a restart knows the email. */
+function decodeTicket(raw: string | undefined): TicketCookie | null {
   if (!raw || !/^[A-Za-z0-9_-]{1,2048}$/.test(raw)) return null;
   try {
     const padded = raw.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((raw.length + 3) % 4);
@@ -106,7 +128,6 @@ function decodeTicket(raw: string | undefined, now: number): TicketCookie | null
     if (typeof v.t !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(v.t)) return null;
     if (typeof v.e !== "string" || !EMAIL.test(v.e)) return null;
     if (typeof v.l !== "number" || typeof v.x !== "number" || typeof v.r !== "string" || Number.isNaN(Date.parse(v.r))) return null;
-    if (v.x <= now) return null;
     return { t: v.t, e: v.e, l: v.l, x: v.x, r: v.r, ...(typeof v.o === "string" && OBJECT_ID.test(v.o) ? { o: v.o } : {}) };
   } catch {
     return null;
@@ -149,8 +170,8 @@ function documentsOf(value: string | undefined): AcceptedDocument[] | undefined 
 /** A failed code call as the browser sees it: the reason only, never the API's sentence or body. */
 function refusalOf(res: CodeResult<unknown> & { ok: false }): { status: number; body: CodeStepRefusal } {
   if (res.error === "refused" && res.reason) {
-    // The gateway's own code: 429 (locked, rate limited), 503 (BOT_CHECK_UNAVAILABLE), else 400.
-    const status = res.status === 429 || res.status === 503 ? res.status : 400;
+    // The gateway's own code: 429 (locked, rate limited), 503 (BOT_CHECK_UNAVAILABLE), 409 (WEBSITE_CODE_DISABLED), else 400.
+    const status = res.status === 429 || res.status === 503 || res.status === 409 ? res.status : 400;
     return {
       status,
       body: {
@@ -164,13 +185,46 @@ function refusalOf(res: CodeResult<unknown> & { ok: false }): { status: number; 
   return { status: 503, body: { reason: UNAVAILABLE_REASON } };
 }
 
+const escapeHtml = (value: string): string =>
+  value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
+/**
+ * The page the thank-you press answers (A3): one form that POSTs the nonce to
+ * the app, with the visible button as its submit. No script at all (CSP
+ * `default-src 'none'`), nothing auto-submits, and it cannot be framed.
+ */
+function continuePage(continueUrl: string, nonce: string, label: string): ResponseView {
+  const appOrigin = new URL(continueUrl).origin;
+  const body =
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">` +
+    `<meta name="referrer" content="no-referrer"><title>${escapeHtml(label)}</title></head><body>` +
+    `<form method="post" action="${escapeHtml(continueUrl)}">` +
+    `<input type="hidden" name="nonce" value="${escapeHtml(nonce)}">` +
+    `<button type="submit" autofocus>${escapeHtml(label)}</button>` +
+    `</form></body></html>`;
+  return {
+    status: 200,
+    headers: {
+      ...baseHeaders(),
+      "Content-Type": "text/html; charset=utf-8",
+      "Content-Security-Policy": `default-src 'none'; form-action ${appOrigin}; frame-ancestors 'none'; base-uri 'none'`,
+      "X-Frame-Options": "DENY",
+      "X-Content-Type-Options": "nosniff",
+    },
+    setCookies: [],
+    body,
+  };
+}
+
 export interface CodeRoutesDeps {
   config: WebsiteKitConfig;
   names: CookieNames;
-  members: MemberReader;
   csrfFor(cookies: Record<string, string>): { token: string; setCookie: string | null };
   /** True when the request is a same-origin read (as /session/me checks). */
   sameOriginRead(req: RequestView): boolean;
+  /** For tests: the checkout call timeouts. */
+  quoteTimeoutMs?: number;
+  startTimeoutMs?: number;
 }
 
 export interface CodeRoutes {
@@ -178,20 +232,22 @@ export interface CodeRoutes {
   codeStart(req: RequestView): Promise<ResponseView>;
   codeResend(req: RequestView): Promise<ResponseView>;
   codeVerify(req: RequestView): Promise<ResponseView>;
-  app(req: RequestView): Promise<ResponseView>;
-  appCode(req: RequestView): Promise<ResponseView>;
-  /** True when the browser's session was made by a code verify that created or completed the account. */
-  isNewAccountBuyer(cookies: Record<string, string>): boolean;
+  codePay(req: RequestView): Promise<ResponseView>;
+  checkoutContinue(req: RequestView): Promise<ResponseView>;
+  /** Server only: the thank-you button from `checkout-proof/context`, or null (no proof, or not valid any more). */
+  checkoutContinueFor(cookies: Record<string, string>): Promise<CheckoutContinue | null>;
   /** The `Set-Cookie` values that drop the code step's cookies (sign-out). */
   clearCookies(): string[];
 }
 
 export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
-  const { config, names, members } = deps;
+  const { config, names } = deps;
   const local = config.insecureLocalCookies;
   const clearTicket = () => clearCookie(names.ticket, "Lax", local);
-  const clearNew = () => clearCookie(names.newAccount, "Lax", local);
+  const clearProof = () => clearCookie(names.proof, "Lax", local);
   const sameSiteForm = (req: RequestView) => sameSitePost(req, { origin: config.origin, csrfCookie: names.csrf });
+  const returnUrl = `${config.origin}${CHECKOUT_RETURN_PATH}`;
+  const appHome = `${config.appUrl}/`;
 
   function buyerIpOf(req: RequestView): string | null {
     const lower: Record<string, string | undefined> = {};
@@ -206,10 +262,25 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     return ip ?? (local ? "127.0.0.1" : null);
   }
 
-  function dropOff(email: string, offer: string | undefined, stage: DropOffStage): void {
+  async function visitorCountryOf(req: RequestView): Promise<string | undefined> {
+    if (!config.visitorCountry) return undefined;
+    try {
+      const value = await config.visitorCountry(req);
+      return typeof value === "string" && OBJECT_ID.test(value) ? value : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function proofOf(cookies: Record<string, string>): string | null {
+    const value = cookies[names.proof];
+    return typeof value === "string" && PROOF_PATTERN.test(value) ? value : null;
+  }
+
+  function dropOff(email: string, offer: string | undefined): void {
     if (!offer) return;
-    // Fire-and-forget: never awaited, never blocks the step, never throws.
-    void reportDropOff(config, { email, offer, stage }).catch(() => undefined);
+    // Fire-and-forget: never awaited, never blocks the step, never throws. "verified" is identity's own (B5).
+    void reportDropOff(config, { email, offer, stage: "code_sent" }).catch(() => undefined);
   }
 
   function ticketCookie(ticket: CodeTicket, email: string, offer: string | undefined): string {
@@ -220,11 +291,92 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
 
   const browserTicket = (t: CodeTicket): CodeStepTicket => ({ codeLength: t.codeLength, codeExpiresInSeconds: t.codeExpiresInSeconds, resendAvailableAt: t.resendAvailableAt });
 
+  /** The purchase the page posts with verify and pay: never a price it was not shown, never a return address. */
+  function purchaseOf(form: Record<string, string>, fallbackOffer: string | undefined) {
+    const offer = typeof form.offer === "string" && OBJECT_ID.test(form.offer) ? form.offer : fallbackOffer;
+    const expectedTotalMinor = typeof form.expectedTotalMinor === "string" && EXPECTED_TOTAL.test(form.expectedTotalMinor) ? form.expectedTotalMinor : null;
+    const couponCode = typeof form.couponCode === "string" && COUPON.test(form.couponCode) ? form.couponCode : undefined;
+    const paymentGateway = typeof form.paymentGateway === "string" && OBJECT_ID.test(form.paymentGateway) ? form.paymentGateway : undefined;
+    const attribution: Record<string, string> = {};
+    for (const key of CHECKOUT_ATTRIBUTION_KEYS) {
+      const value = form[key];
+      if (typeof value === "string" && value.trim() !== "") attribution[key] = value.trim().slice(0, ATTRIBUTION_MAX);
+    }
+    return { offer, expectedTotalMinor, couponCode, paymentGateway, attribution: Object.keys(attribution).length > 0 ? attribution : undefined };
+  }
+  type Purchase = ReturnType<typeof purchaseOf> & { offer: string };
+
+  function failed(error: CheckoutFailure, reason: string | undefined): CodeStepPayment {
+    if (error === "checkout_refused" && reason) return { kind: "payment-failed", reason };
+    return { kind: "payment-failed", reason: UNAVAILABLE_REASON };
+  }
+
+  /** The answer, with the proof cookie dropped when the API says the proof is no good. */
+  function paymentAnswer(answer: CodeStepPayment, setCookies: string[] = []): ResponseView {
+    const gone = answer.kind === "payment-failed" && PROOF_GONE.has(answer.reason);
+    return json(200, answer, gone ? [...setCookies.filter((c) => !c.startsWith(`${names.proof}=`)), clearProof()] : setCookies);
+  }
+
+  /**
+   * A start with the proof at `expectedTotalMinor`. ONE start, never retried;
+   * on PRICE_CHANGED the price is quoted again ONCE and shown (A2): nothing is
+   * started at a price the buyer has not seen.
+   */
+  async function startWithProof(buyer: { checkoutProof: string; buyerIp: string }, p: Purchase, expectedTotalMinor: string, country: string | undefined): Promise<CodeStepPayment> {
+    const quoteInput: MemberQuoteInput = { offer: p.offer, ...(p.couponCode ? { couponCode: p.couponCode } : {}), ...(country ? { visitorCountry: country } : {}) };
+    const input: MemberStartInput = {
+      ...quoteInput,
+      ...(p.paymentGateway ? { paymentGateway: p.paymentGateway } : {}),
+      expectedTotalMinor,
+      // Always the site's own return page: never an address from the browser.
+      returnUrl,
+      ...(p.attribution ? { attribution: p.attribution } : {}),
+    };
+    const started = await checkoutStart(config, buyer, input, deps.startTimeoutMs);
+    if (started.ok) {
+      const s = started.body;
+      return {
+        kind: "redirect",
+        url: s.redirectUrl ?? `${returnUrl}/${s.orderId}`,
+        orderId: s.orderId,
+        orderToken: s.orderToken,
+        orderTokenExpiresAt: s.orderTokenExpiresAt,
+        settled: s.redirectUrl === null || s.paymentState === "PAID",
+      };
+    }
+    if (started.error === "checkout_refused" && started.reason === "ALREADY_ENROLLED") return { kind: "already-owned" };
+    if (started.error === "checkout_refused" && started.reason === "PRICE_CHANGED") {
+      const requoted = await checkoutQuote(config, buyer, quoteInput, deps.quoteTimeoutMs);
+      if (!requoted.ok) return failed(requoted.error, requoted.reason);
+      if (requoted.body.alreadyEnrolled) return { kind: "already-owned" };
+      const q = requoted.body;
+      return { kind: "confirm-price", totalMinor: q.totalMinor, currencyCode: q.currencyCode, minorUnitExponent: q.minorUnitExponent };
+    }
+    return failed(started.error, started.reason);
+  }
+
+  /** A2: re-quote with the proof; an unchanged total starts at once, a changed one is shown first. */
+  async function payAfterVerify(buyer: { checkoutProof: string; buyerIp: string }, p: Purchase, country: string | undefined): Promise<CodeStepPayment> {
+    const quoted = await checkoutQuote(
+      config,
+      buyer,
+      { offer: p.offer, ...(p.couponCode ? { couponCode: p.couponCode } : {}), ...(country ? { visitorCountry: country } : {}) },
+      deps.quoteTimeoutMs,
+    );
+    if (!quoted.ok) return failed(quoted.error, quoted.reason);
+    const q = quoted.body;
+    if (q.alreadyEnrolled) return { kind: "already-owned" };
+    if (p.expectedTotalMinor === null || q.totalMinor !== p.expectedTotalMinor) {
+      return { kind: "confirm-price", totalMinor: q.totalMinor, currencyCode: q.currencyCode, minorUnitExponent: q.minorUnitExponent };
+    }
+    return startWithProof(buyer, p, q.totalMinor, country);
+  }
+
   async function codeStep(req: RequestView): Promise<ResponseView> {
     if (req.method !== "GET" && req.method !== "HEAD") return methodNotAllowed("GET");
     if (!deps.sameOriginRead(req)) return forbidden();
     const csrf = deps.csrfFor(req.cookies);
-    const t = decodeTicket(req.cookies[names.ticket], config.now());
+    const t = decodeTicket(req.cookies[names.ticket]);
     const answer: CodeStepRead = {
       formToken: csrf.token,
       pending: t ? { email: t.e, codeLength: t.l, codeExpiresAt: new Date(t.x).toISOString(), resendAvailableAt: t.r } : null,
@@ -233,6 +385,17 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     view.headers.Vary = "Cookie";
     if (req.method === "HEAD") delete view.body;
     return view;
+  }
+
+  async function start(email: string, offer: string | undefined, buyerIp: string, botToken: string | undefined): Promise<ResponseView> {
+    const res = await codeStart(config, { email, buyerIp, ...(botToken ? { botToken } : {}) });
+    if (!res.ok) {
+      const r = refusalOf(res);
+      return json(r.status, r.body);
+    }
+    dropOff(email, offer);
+    // A new ticket: any proof from an earlier email is dropped (E4).
+    return json(200, browserTicket(res.body), [ticketCookie(res.body, email, offer), clearProof()]);
   }
 
   async function startRoute(req: RequestView): Promise<ResponseView> {
@@ -245,26 +408,22 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     const botToken = typeof form.botToken === "string" && form.botToken !== "" && form.botToken.length <= BOT_TOKEN_MAX ? form.botToken : undefined;
     const buyerIp = buyerIpOf(req);
     if (!buyerIp) return json(503, { reason: UNAVAILABLE_REASON } satisfies CodeStepRefusal);
-
-    const res = await codeStart(config, { email, buyerIp, ...(botToken ? { botToken } : {}) });
-    if (!res.ok) {
-      const r = refusalOf(res);
-      return json(r.status, r.body);
-    }
-    dropOff(email, offer, "code_sent");
-    return json(200, browserTicket(res.body), [ticketCookie(res.body, email, offer)]);
+    return start(email, offer, buyerIp, botToken);
   }
 
   async function resendRoute(req: RequestView): Promise<ResponseView> {
     if (req.method !== "POST") return methodNotAllowed("POST");
     if (!sameSiteForm(req)) return forbidden();
-    const t = decodeTicket(req.cookies[names.ticket], config.now());
+    const t = decodeTicket(req.cookies[names.ticket]);
     if (!t) return json(400, { reason: "WEBSITE_CODE_EXPIRED" } satisfies CodeStepRefusal, [clearTicket()]);
     const buyerIp = buyerIpOf(req);
     if (!buyerIp) return json(503, { reason: UNAVAILABLE_REASON } satisfies CodeStepRefusal);
 
+    // §8: on an expired ticket, "Send a new code" starts again with the stored email.
+    if (t.x <= config.now()) return start(t.e, t.o, buyerIp, undefined);
     const res = await codeResend(config, { ticketId: t.t, buyerIp });
     if (!res.ok) {
+      if (res.error === "refused" && res.reason === "WEBSITE_CODE_EXPIRED") return start(t.e, t.o, buyerIp, undefined);
       const r = refusalOf(res);
       return json(r.status, r.body);
     }
@@ -274,12 +433,13 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
   async function verifyRoute(req: RequestView): Promise<ResponseView> {
     if (req.method !== "POST") return methodNotAllowed("POST");
     if (!sameSiteForm(req)) return forbidden();
-    const t = decodeTicket(req.cookies[names.ticket], config.now());
-    if (!t) return json(400, { reason: "WEBSITE_CODE_EXPIRED" } satisfies CodeStepRefusal, [clearTicket()]);
+    const t = decodeTicket(req.cookies[names.ticket]);
+    if (!t || t.x <= config.now()) return json(400, { reason: "WEBSITE_CODE_EXPIRED" } satisfies CodeStepRefusal);
     const form = req.form ?? {};
-    const code = typeof form.code === "string" ? form.code.replace(/\s+/g, "") : "";
-    // Not digits at all: the code's shape is wrong, so it isn't right (no guess is spent).
+    const code = typeof form.code === "string" ? form.code.replace(/\D+/g, "") : "";
+    // No digits at all: the code's shape is wrong, so it isn't right (no guess is spent).
     if (!DIGITS.test(code)) return json(400, { reason: "WEBSITE_CODE_INVALID" } satisfies CodeStepRefusal);
+    const purchase = purchaseOf(form, t.o);
     const buyerIp = buyerIpOf(req);
     if (!buyerIp) return json(503, { reason: UNAVAILABLE_REASON } satisfies CodeStepRefusal);
 
@@ -300,63 +460,57 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
       return json(r.status, r.body);
     }
 
-    const now = config.now();
-    const expiresAt = new Date(res.body.expiresAt);
-    const maxAge = Math.floor((expiresAt.getTime() - now) / 1000);
-    if (maxAge <= 0) return json(503, { reason: UNAVAILABLE_REASON } satisfies CodeStepRefusal, [clearTicket()]);
-
-    // Signed in now: a fresh check reads the member (the verify answer carries no id to cache).
-    await members.forget(res.body.sessionToken);
-    // The form value stays the one the page already holds, now living as long as the session.
-    const csrf = deps.csrfFor(req.cookies).token;
-    const lifetime = { sameSite: "Lax" as const, maxAge, expires: expiresAt };
+    // The proof: HttpOnly, only for its own life. No account, no session (D2).
     const setCookies = [
-      serializeCookie(names.session, res.body.sessionToken, lifetime, local),
-      serializeCookie(names.csrf, csrf, { ...lifetime, sameSite: "Strict" }, local),
-      res.body.isNewAccount ? serializeCookie(names.newAccount, "1", lifetime, local) : clearNew(),
+      serializeCookie(names.proof, res.body.proof, { sameSite: "Lax", maxAge: res.body.proofExpiresInSeconds }, local),
       clearTicket(),
     ];
-    dropOff(t.e, t.o, "verified");
-    const m = res.body.member;
-    const answer: CodeStepVerified = {
-      member: { ...(m.firstName ? { firstName: m.firstName } : {}), ...(m.lastName ? { lastName: m.lastName } : {}) },
-      // Display only: the flag itself stays on the server (HttpOnly cookie).
-      notice: res.body.isNewAccount ? "account-ready" : null,
-      signOutToken: csrf,
-    };
-    return json(200, answer, setCookies);
+    if (!purchase.offer) return paymentAnswer({ kind: "payment-failed", reason: UNAVAILABLE_REASON }, setCookies);
+    const buyer = { checkoutProof: res.body.proof, buyerIp };
+    const answer = await payAfterVerify(buyer, purchase as Purchase, await visitorCountryOf(req));
+    return paymentAnswer(answer, setCookies);
   }
 
-  async function app(req: RequestView): Promise<ResponseView> {
-    if (req.method !== "GET" && req.method !== "HEAD") return methodNotAllowed("GET");
-    const to = savedPath(new URL(req.url, config.origin).searchParams.get("to"));
-    if (!config.appSignIn || !isSessionToken(req.cookies[names.session])) return redirect(303, `${config.appUrl}${to}`);
-    const target = new URL(`${config.appUrl}/session/claim`);
-    target.searchParams.set("return_origin", config.origin);
-    target.searchParams.set("to", to);
-    return redirect(303, target.href);
+  async function payRoute(req: RequestView): Promise<ResponseView> {
+    if (req.method !== "POST") return methodNotAllowed("POST");
+    if (!sameSiteForm(req)) return forbidden();
+    const purchase = purchaseOf(req.form ?? {}, undefined);
+    if (!purchase.offer || purchase.expectedTotalMinor === null) return json(400, { reason: "INVALID_REQUEST" } satisfies CodeStepRefusal);
+    const proof = proofOf(req.cookies);
+    if (!proof) return paymentAnswer({ kind: "payment-failed", reason: "CHECKOUT_PROOF_INVALID" });
+    const buyerIp = buyerIpOf(req);
+    if (!buyerIp) return json(503, { reason: UNAVAILABLE_REASON } satisfies CodeStepRefusal);
+    const answer = await startWithProof({ checkoutProof: proof, buyerIp }, purchase as Purchase, purchase.expectedTotalMinor, await visitorCountryOf(req));
+    return paymentAnswer(answer);
   }
 
-  async function appCodeRoute(req: RequestView): Promise<ResponseView> {
-    if (req.method !== "GET" && req.method !== "HEAD") return methodNotAllowed("GET");
-    const params = new URL(req.url, config.origin).searchParams;
-    const state = params.get("state");
-    if (state === null || !STATE_PATTERN.test(state)) return { status: 400, headers: baseHeaders(), setCookies: [] };
-    const back = (extra: Record<string, string>) => {
-      const target = new URL(`${config.appUrl}/session/claim/callback`);
-      for (const [k, v] of Object.entries(extra)) target.searchParams.set(k, v);
-      target.searchParams.set("state", state);
-      return redirect(302, target.href);
-    };
-    const loginRequired = () => back({ error: "login_required" });
+  async function checkoutContinueFor(cookies: Record<string, string>): Promise<CheckoutContinue | null> {
+    const proof = proofOf(cookies);
+    if (!proof) return null;
+    const res = await proofContext(config, { proof });
+    if (!res.ok) return null;
+    const continueAs = res.body.continueAs;
+    return { continueAs, label: continueAs === "sign-up" ? CODE_STEP_COPY.continueSignUp : CODE_STEP_COPY.goToCourse, action: CODE_PATHS.checkoutContinue };
+  }
 
-    const challenge = params.get("code_challenge");
-    const token = req.cookies[names.session];
-    if (!config.appSignIn || challenge === null || !CHALLENGE.test(challenge) || !isSessionToken(token)) return loginRequired();
-    if (req.method === "HEAD") return loginRequired();
-
-    const res = await appCode(config, { sessionToken: token, codeChallenge: challenge });
-    return res.ok ? back({ code: res.body.code }) : loginRequired();
+  /**
+   * The thank-you press (A3). The nonce is minted here, at the press, and goes
+   * only into the answered form's body. Anything wrong sends the buyer to the
+   * app's normal sign-in (E10); nothing says why.
+   */
+  async function continueRoute(req: RequestView): Promise<ResponseView> {
+    if (req.method !== "POST") return methodNotAllowed("POST");
+    if (!sameSiteForm(req)) return forbidden();
+    const toApp = (setCookies: string[] = []): ResponseView => ({ status: 303, headers: { ...baseHeaders(), Location: appHome }, setCookies });
+    const proof = proofOf(req.cookies);
+    if (!proof) return toApp();
+    const context = await proofContext(config, { proof });
+    if (!context.ok) return toApp(context.error === "refused" && context.reason === "CHECKOUT_PROOF_INVALID" ? [clearProof()] : []);
+    const minted = await proofContinue(config, { proof });
+    if (!minted.ok) return toApp(minted.error === "refused" && minted.reason === "CHECKOUT_PROOF_INVALID" ? [clearProof()] : []);
+    const label = context.body.continueAs === "sign-up" ? CODE_STEP_COPY.continueSignUp : CODE_STEP_COPY.goToCourse;
+    // The proof cookie stays: a second press mints again, and the app answers "That link has expired" (U9a).
+    return continuePage(minted.body.continueUrl, minted.body.nonce, label);
   }
 
   return {
@@ -364,12 +518,9 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     codeStart: startRoute,
     codeResend: resendRoute,
     codeVerify: verifyRoute,
-    app,
-    appCode: appCodeRoute,
-    isNewAccountBuyer(cookies) {
-      return cookies[names.newAccount] === "1" && isSessionToken(cookies[names.session]);
-    },
-    clearCookies: () => [clearNew(), clearTicket()],
+    codePay: payRoute,
+    checkoutContinue: continueRoute,
+    checkoutContinueFor,
+    clearCookies: () => [clearTicket(), clearProof()],
   };
 }
-

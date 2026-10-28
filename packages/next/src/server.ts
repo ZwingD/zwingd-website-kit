@@ -6,10 +6,11 @@
  *   const member = await getMember(kit);          // { firstName?, lastName? } or null
  *   const signOut = await signOutToken(kit);      // the sign-out form's csrf value
  *   const account = await accountUrl(kit);        // where "Go to my account" opens
+ *   const next = await getCheckoutContinue(kit);  // v0.2.0 thank-you button, or null
  */
 import { cookies } from "next/headers";
 
-import type { MemberCheck, MemberCheckout, MemberContact, MemberQuoteCheck, WebsiteKit } from "@zwingd-ce/website-kit";
+import type { CheckoutContinue, MemberCheck, MemberCheckout, MemberContact, MemberQuoteCheck, WebsiteKit } from "@zwingd-ce/website-kit";
 
 /** What a page may show: the member's name only. Never an email or phone (see `getCheckoutMember`). */
 export interface SiteMember {
@@ -89,12 +90,13 @@ export async function accountUrl(kit: WebsiteKit): Promise<string> {
 }
 
 /**
- * v0.2.0: true when this buyer's website session came from a code verify that
- * made or completed their account (checkout v3.1, `isNewAccount`). Read from
- * the kit's HttpOnly cookie, so it never reaches the browser. For the return
- * page's button label ("Continue sign-up" / "Go to my course"): pass the page
- * only the label, never the flag.
+ * v0.2.0, the thank-you page (checkout v3.2 §8 step 4): which button to show,
+ * from a SERVER-side read of the proof context (`checkout-proof/context`):
+ * `{ label: "Continue sign-up" | "Go to my course", action, continueAs }`, or
+ * null when this browser holds no proof that is still good (show your usual
+ * link to the course instead). Pass it to `<CheckoutContinueButton next={...} />`.
+ * It never mints the continue nonce: only the press does (A3).
  */
-export async function isNewAccountBuyer(kit: WebsiteKit): Promise<boolean> {
-  return kit.isNewAccountBuyer(await cookieMap());
+export async function getCheckoutContinue(kit: WebsiteKit): Promise<CheckoutContinue | null> {
+  return kit.checkoutContinueFor(await cookieMap());
 }

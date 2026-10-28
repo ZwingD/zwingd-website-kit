@@ -1,20 +1,27 @@
 /**
- * The code step's copy and its headless state (checkout v3.1, spec §6): the
- * page draws the step, this decides what it says and when. Framework-free, so
- * `useCodeStep` (Next) and any other site use the same rules.
+ * The code step's copy and its headless state (checkout v3.2, spec §8, §8a,
+ * §10b A2): the page draws the step, this decides what it says and when.
+ * Framework-free, so `useCodeStep` (Next) and any other site use the same rules.
  *
- *   email ──send──► sending ──sent──► code ──verify──► verifying ──verified──► verified
- *     ▲                 │               │  ▲               │
- *     └─failed──────────┘               │  └──failed───────┘   (stays on the code step)
- *     └────────── changeEmail ──────────┘
+ *   email ─send─► sending ─sent─► code ─verify─► verifying ─┬─ redirect ──────► paying (to the provider)
+ *     ▲              │              │ ▲              │       ├─ confirm-price ─► confirm-price ─pay─► paying
+ *     └──failed──────┘              │ └──failed──────┘       ├─ already-owned ─► owned
+ *     └──────── changeEmail ────────┘                        └─ payment-failed ► pay-failed ─pay─► paying
  *
- * Errors are keyed by `reason`: invalid or expired code (stay, focus the
- * input), locked or rate-limited (the wait from `retryAfterSeconds`), anything
- * else the generic line. A send, resend or verify already in flight ignores a
- * second one (the double-submit guard).
+ * The code step creates no account and no session: a right code gives the
+ * site's SERVER a verified-email proof (HttpOnly cookie), and the same request
+ * re-quotes with it. An unchanged total goes straight to payment; a changed
+ * one (member price, D7) waits for "Pay {amount}" (A2).
+ *
+ * Errors are keyed by `reason` and name the input they belong to (`field`):
+ * invalid or expired code (stay, focus the code input), locked or
+ * rate-limited (the wait), the resend cap (E5, its own line and the wait),
+ * terms required (the tick box, recoverable), an invalid email (the email
+ * input), anything else the generic line. A send, resend, verify or pay
+ * already in flight ignores a second one (the double-submit guard).
  */
 
-/** The step's copy, exactly as signed (spec §6). A site may restyle it, never reword it. */
+/** The step's copy, exactly as signed (spec §8a). A site may restyle it, never reword it. */
 export const CODE_STEP_COPY = Object.freeze({
   heading: "Check your email",
   intro: "We sent a 6-digit code to {email}. Enter it to continue to payment.",
@@ -26,12 +33,18 @@ export const CODE_STEP_COPY = Object.freeze({
   wrongCode: "That code isn't right. Check it and try again, or send a new code.",
   expiredCode: "That code has expired. Send a new code to continue.",
   locked: "Too many tries. Try again in {minutes} min.",
-  otherError: "We couldn't check your code. Try again.",
   resendCap: "You've asked for the most codes we can send for now. Try again in {minutes} min, or use a different email.",
+  otherError: "We couldn't check your code. Try again.",
   hint: "Didn't get a code? Check your spam folder, or use a different email.",
-  /** `{terms link}` is where the site draws its link to the workspace's terms. */
-  terms: "By continuing you agree to the {terms link}.",
-  accountReady: "Your account is ready.",
+  invalidEmail: "Enter a valid email address.",
+  /** `{terms links}` is where the site draws its links to the workspace's legal documents. */
+  terms: "I agree to the {terms links}.",
+  goingToPayment: "Taking you to payment…",
+  /** A2: the re-quote after verify changed the total (member price). */
+  memberPrice: "Your member price is {amount}.",
+  payButton: "Pay {amount}",
+  continueSignUp: "Continue sign-up",
+  goToCourse: "Go to my course",
 });
 
 export type CodeStepCopyKey = keyof typeof CODE_STEP_COPY;
@@ -41,24 +54,27 @@ export function fillCopy(line: string, values: Record<string, string | number>):
   return line.replace(/\{([a-z ]+)\}/g, (whole, name: string) => (name in values ? String(values[name]) : whole));
 }
 
-/** The "you may continue" notice the verify answers the browser: display only, never stored. */
-export type CodeStepNotice = "account-ready" | null;
+export type CodeStepName = "email" | "sending" | "code" | "verifying" | "confirm-price" | "paying" | "owned" | "pay-failed";
 
-export type CodeStepName = "email" | "sending" | "code" | "verifying" | "verified";
+/** The input an error belongs to: the page ties the message to it (`aria-describedby`, `aria-invalid`). */
+export type CodeStepField = "email" | "code" | "terms" | "payment";
 
 export interface CodeStepError {
   /** The API's reason (`WEBSITE_CODE_INVALID`, ...), or `UNAVAILABLE` when it could not answer. */
   reason: string;
-  /** The line to show (spec §6 copy). */
+  /** The line to show (spec §8a). For `terms` it is the tick box's own line: show the tick box. */
   message: string;
+  field: CodeStepField;
   retryAfterSeconds: number | null;
   /** `WEBSITE_TERMS_REQUIRED`: the fields the workspace needs. */
   fields?: string[];
 }
 
-export interface CodeStepMember {
-  firstName?: string;
-  lastName?: string;
+/** A2: the new total after the re-quote with the proof. */
+export interface CodeStepPrice {
+  totalMinor: string;
+  currencyCode: string;
+  minorUnitExponent: number;
 }
 
 export interface CodeStepState {
@@ -69,16 +85,22 @@ export interface CodeStepState {
   codeExpiresAt: number | null;
   /** When "Send a new code" is ready (ms), or null. */
   resendAvailableAt: number | null;
+  /** The countdown's length when it started (seconds): what the polite live region says once. */
+  countdownFrom: number;
   /** True while a resend is in flight (the step stays `code`). */
   resending: boolean;
   error: CodeStepError | null;
   /** Bumped whenever focus should go to the code input (the step opened; an invalid or expired code). */
   focusCode: number;
-  /** After verify: `account-ready` for a new account (show "Your account is ready."), else null. */
-  notice: CodeStepNotice;
-  member: CodeStepMember | null;
-  /** After verify: the value forms post as `csrf` (sign-out, member checkout). */
-  signOutToken: string | null;
+  /** Bumped whenever focus should go to the terms tick box (terms required). */
+  focusTerms: number;
+  /** The workspace requires terms: the tick box shows (also after a `WEBSITE_TERMS_REQUIRED`). */
+  termsRequired: boolean;
+  termsAccepted: boolean;
+  /** `confirm-price`: the member price to show and pay (A2). */
+  price: CodeStepPrice | null;
+  /** `owned`: true when this start's order settled at once (a zero total). */
+  settled: boolean;
 }
 
 /** What the kit's /session/code-start and /session/code-resend answer the browser. */
@@ -88,12 +110,25 @@ export interface CodeStepTicket {
   resendAvailableAt: string;
 }
 
-/** What the kit's /session/code-verify answers the browser. Never `isNewAccount`. */
-export interface CodeStepVerified {
-  member: CodeStepMember;
-  notice: CodeStepNotice;
-  signOutToken: string;
-}
+/**
+ * What /session/code-verify and /session/code-pay answer the browser (200).
+ * Never the proof, never anything about membership beyond the price itself.
+ */
+export type CodeStepPayment =
+  | {
+      kind: "redirect";
+      /** The payment page, or the site's return page when nothing was owed. */
+      url: string;
+      orderId: string;
+      /** For the return page: keep it in sessionStorage, never in an address. */
+      orderToken: string | null;
+      orderTokenExpiresAt: string | null;
+      settled: boolean;
+    }
+  | ({ kind: "confirm-price" } & CodeStepPrice)
+  | { kind: "already-owned"; settled?: true }
+  /** The code was right (or the proof is held), but payment could not start. */
+  | { kind: "payment-failed"; reason: string };
 
 /** A refusal as the kit's code routes answer it to the browser. */
 export interface CodeStepRefusal {
@@ -115,48 +150,87 @@ export type CodeStepAction =
   | { type: "sent"; email?: string; ticket: CodeStepTicket; now: number }
   | { type: "resend" }
   | { type: "verify" }
-  | { type: "verified"; answer: CodeStepVerified }
-  | { type: "failed"; refusal: CodeStepRefusal }
+  | { type: "pay" }
+  | { type: "answered"; answer: CodeStepPayment }
+  | { type: "failed"; refusal: CodeStepRefusal; now?: number }
+  | { type: "terms"; accepted: boolean }
   | { type: "changeEmail" }
-  | { type: "restore"; pending: PendingCodeStep };
+  | { type: "restore"; pending: PendingCodeStep; now: number };
 
 export const UNAVAILABLE_REASON = "UNAVAILABLE";
 
-export const initialCodeStep = (email = ""): CodeStepState => ({
-  step: "email",
-  email,
-  codeLength: 6,
-  codeExpiresAt: null,
-  resendAvailableAt: null,
-  resending: false,
-  error: null,
-  focusCode: 0,
-  notice: null,
-  member: null,
-  signOutToken: null,
-});
+/** Reasons after which the proof is gone: the buyer verifies again from the email step. */
+export const PROOF_GONE_REASONS: readonly string[] = Object.freeze([
+  "CHECKOUT_PROOF_INVALID",
+  "CHECKOUT_PROOF_EMAIL_MISMATCH",
+  "EMAIL_VERIFICATION_REQUIRED",
+]);
+
+export const initialCodeStep = (init: string | { email?: string; termsRequired?: boolean } = ""): CodeStepState => {
+  const o = typeof init === "string" ? { email: init } : init;
+  return {
+    step: "email",
+    email: o.email ?? "",
+    codeLength: 6,
+    codeExpiresAt: null,
+    resendAvailableAt: null,
+    countdownFrom: 0,
+    resending: false,
+    error: null,
+    focusCode: 0,
+    focusTerms: 0,
+    termsRequired: o.termsRequired === true,
+    termsAccepted: false,
+    price: null,
+    settled: false,
+  };
+};
 
 const minutesOf = (seconds: number | null): number => Math.max(1, Math.ceil((seconds ?? 60) / 60));
 
-/** The line for a refusal, by reason only (the same reason always says the same thing). */
-export function codeStepError(refusal: CodeStepRefusal): CodeStepError {
+/**
+ * The line for a refusal, by reason (the same reason always says the same
+ * thing). `during` says what was asked: a `WEBSITE_CODE_LOCKED` answering a
+ * resend is the resend cap (E5, §4.2).
+ */
+export function codeStepError(refusal: CodeStepRefusal, during: "start" | "resend" | "verify" | "pay" = "verify"): CodeStepError {
   const retry = typeof refusal.retryAfterSeconds === "number" ? refusal.retryAfterSeconds : null;
   const base = { reason: refusal.reason, retryAfterSeconds: retry, ...(refusal.fields ? { fields: refusal.fields } : {}) };
+  const field: CodeStepField = during === "start" ? "email" : during === "pay" ? "payment" : "code";
   switch (refusal.reason) {
+    case "WEBSITE_CODE_EMAIL_INVALID":
+      return { ...base, field: "email", message: CODE_STEP_COPY.invalidEmail };
     case "WEBSITE_CODE_INVALID":
-      return { ...base, message: CODE_STEP_COPY.wrongCode };
+      return { ...base, field: "code", message: CODE_STEP_COPY.wrongCode };
     case "WEBSITE_CODE_EXPIRED":
-      return { ...base, message: CODE_STEP_COPY.expiredCode };
+      return { ...base, field: "code", message: CODE_STEP_COPY.expiredCode };
     case "WEBSITE_CODE_LOCKED":
+      if (during === "resend") return { ...base, field, message: fillCopy(CODE_STEP_COPY.resendCap, { minutes: minutesOf(retry) }) };
+      return { ...base, field, message: fillCopy(CODE_STEP_COPY.locked, { minutes: minutesOf(retry) }) };
     case "WEBSITE_CODE_RATE_LIMITED":
-      return { ...base, message: fillCopy(CODE_STEP_COPY.locked, { minutes: minutesOf(retry) }) };
+      return { ...base, field, message: fillCopy(CODE_STEP_COPY.locked, { minutes: minutesOf(retry) }) };
+    case "WEBSITE_TERMS_REQUIRED":
+      return { ...base, field: "terms", message: CODE_STEP_COPY.terms };
     default:
-      return { ...base, message: CODE_STEP_COPY.otherError };
+      return { ...base, field, message: CODE_STEP_COPY.otherError };
   }
 }
 
 /** Invalid or expired: the buyer types again, so focus goes back to the input. */
 const refocuses = (reason: string) => reason === "WEBSITE_CODE_INVALID" || reason === "WEBSITE_CODE_EXPIRED";
+
+function codeOpened(state: CodeStepState, fields: Partial<CodeStepState>, now: number): CodeStepState {
+  const resendAt = fields.resendAvailableAt ?? null;
+  return {
+    ...state,
+    ...fields,
+    step: "code",
+    countdownFrom: resendAt === null ? 0 : Math.max(0, Math.ceil((resendAt - now) / 1000)),
+    resending: false,
+    error: null,
+    focusCode: state.focusCode + 1,
+  };
+}
 
 export function codeStepReducer(state: CodeStepState, action: CodeStepAction): CodeStepState {
   switch (action.type) {
@@ -166,17 +240,16 @@ export function codeStepReducer(state: CodeStepState, action: CodeStepAction): C
     case "sent": {
       if (state.step !== "sending" && !(state.step === "code" && state.resending)) return state;
       const t = action.ticket;
-      return {
-        ...state,
-        step: "code",
-        ...(action.email ? { email: action.email } : {}),
-        codeLength: t.codeLength,
-        codeExpiresAt: action.now + t.codeExpiresInSeconds * 1000,
-        resendAvailableAt: Date.parse(t.resendAvailableAt),
-        resending: false,
-        error: null,
-        focusCode: state.focusCode + 1,
-      };
+      return codeOpened(
+        state,
+        {
+          ...(action.email ? { email: action.email } : {}),
+          codeLength: t.codeLength,
+          codeExpiresAt: action.now + t.codeExpiresInSeconds * 1000,
+          resendAvailableAt: Date.parse(t.resendAvailableAt),
+        },
+        action.now,
+      );
     }
     case "resend":
       if (state.step !== "code" || state.resending) return state;
@@ -184,39 +257,58 @@ export function codeStepReducer(state: CodeStepState, action: CodeStepAction): C
     case "verify":
       if (state.step !== "code" || state.resending) return state;
       return { ...state, step: "verifying", error: null };
-    case "verified":
-      if (state.step !== "verifying") return state;
-      return {
-        ...state,
-        step: "verified",
-        error: null,
-        notice: action.answer.notice === "account-ready" ? "account-ready" : null,
-        member: action.answer.member,
-        signOutToken: action.answer.signOutToken,
-      };
-    case "failed": {
-      const error = codeStepError(action.refusal);
-      if (state.step === "sending") return { ...state, step: "email", error };
-      if (state.step === "verifying" || (state.step === "code" && state.resending)) {
-        return { ...state, step: "code", resending: false, error, focusCode: refocuses(error.reason) ? state.focusCode + 1 : state.focusCode };
+    case "pay":
+      if (state.step !== "confirm-price" && state.step !== "pay-failed") return state;
+      return { ...state, step: "paying", error: null };
+    case "answered": {
+      if (state.step !== "verifying" && state.step !== "paying") return state;
+      const a = action.answer;
+      if (a.kind === "redirect") return { ...state, step: "paying", error: null };
+      if (a.kind === "already-owned") return { ...state, step: "owned", error: null, settled: a.settled === true };
+      if (a.kind === "confirm-price") {
+        return { ...state, step: "confirm-price", error: null, price: { totalMinor: a.totalMinor, currencyCode: a.currencyCode, minorUnitExponent: a.minorUnitExponent } };
       }
-      return state;
+      // payment-failed: the proof is gone → verify again from the email step (the email is kept).
+      if (PROOF_GONE_REASONS.includes(a.reason)) {
+        return { ...initialCodeStep({ email: state.email, termsRequired: state.termsRequired }), error: codeStepError({ reason: a.reason }, "start") };
+      }
+      return { ...state, step: "pay-failed", error: codeStepError({ reason: a.reason }, "pay") };
+    }
+    case "failed": {
+      if (state.step === "sending") return { ...state, step: "email", error: codeStepError(action.refusal, "start") };
+      if (state.step === "paying") return { ...state, step: "pay-failed", error: codeStepError(action.refusal, "pay") };
+      const resending = state.step === "code" && state.resending;
+      if (state.step !== "verifying" && !resending) return state;
+      const error = codeStepError(action.refusal, resending ? "resend" : "verify");
+      const next: CodeStepState = { ...state, step: "code", resending: false, error };
+      if (refocuses(error.reason)) next.focusCode = state.focusCode + 1;
+      if (error.field === "terms") {
+        next.termsRequired = true;
+        next.focusTerms = state.focusTerms + 1;
+      }
+      // E5: the resend cap holds "Send a new code" for the wait.
+      if (resending && error.retryAfterSeconds !== null && action.now !== undefined) {
+        next.resendAvailableAt = action.now + error.retryAfterSeconds * 1000;
+        next.countdownFrom = error.retryAfterSeconds;
+      }
+      return next;
+    }
+    case "terms": {
+      // Ticking the box clears its own error: the step is recoverable.
+      const error = state.error?.field === "terms" && action.accepted ? null : state.error;
+      return { ...state, termsAccepted: action.accepted, error };
     }
     case "changeEmail":
-      if (state.step === "verifying" || state.step === "verified" || state.step === "sending") return state;
-      return { ...initialCodeStep(state.email) };
+      if (state.step !== "code" && state.step !== "email" && state.step !== "pay-failed" && state.step !== "confirm-price") return state;
+      return initialCodeStep({ email: state.email, termsRequired: state.termsRequired });
     case "restore": {
       if (state.step !== "email") return state;
       const p = action.pending;
-      return {
-        ...state,
-        step: "code",
-        email: p.email,
-        codeLength: p.codeLength,
-        codeExpiresAt: Date.parse(p.codeExpiresAt),
-        resendAvailableAt: Date.parse(p.resendAvailableAt),
-        focusCode: state.focusCode + 1,
-      };
+      return codeOpened(
+        state,
+        { email: p.email, codeLength: p.codeLength, codeExpiresAt: Date.parse(p.codeExpiresAt), resendAvailableAt: Date.parse(p.resendAvailableAt) },
+        action.now,
+      );
     }
     default:
       return state;
@@ -231,4 +323,37 @@ export function resendCountdown(state: CodeStepState, now: number): { seconds: n
     label: seconds > 0 ? fillCopy(CODE_STEP_COPY.resendWaiting, { seconds }) : CODE_STEP_COPY.resendReady,
     canResend: state.step === "code" && !state.resending && seconds === 0,
   };
+}
+
+/**
+ * What the step's polite live region says (§8 accessibility). It changes only
+ * when the countdown starts ("Send a new code in 60s", once) and when it is
+ * ready ("Send a new code"), and says "Taking you to payment…" while going to
+ * payment; it never ticks every second. Empty otherwise.
+ */
+export function codeStepAnnouncement(state: CodeStepState, now: number): string {
+  if (state.step === "paying") return CODE_STEP_COPY.goingToPayment;
+  if (state.step !== "code" || state.resendAvailableAt === null) return "";
+  if (resendCountdown(state, now).seconds > 0) return fillCopy(CODE_STEP_COPY.resendWaiting, { seconds: state.countdownFrom });
+  return CODE_STEP_COPY.resendReady;
+}
+
+/** A pasted or typed code: digits only ("123 456" → "123456"), then at most `length` of them. */
+export function normalizeCode(value: string, length = 6): string {
+  return value.replace(/\D/g, "").slice(0, Math.max(1, length));
+}
+
+/** A minor-unit total as money, e.g. `formatAmount({ totalMinor: "4900", minorUnitExponent: 2, currencyCode: "USD" })` → "$49.00". */
+export function formatAmount(price: CodeStepPrice, locale = "en-US"): string {
+  const major = Number(price.totalMinor) / 10 ** price.minorUnitExponent;
+  try {
+    return new Intl.NumberFormat(locale, {
+      style: "currency",
+      currency: price.currencyCode,
+      minimumFractionDigits: price.minorUnitExponent,
+      maximumFractionDigits: price.minorUnitExponent,
+    }).format(major);
+  } catch {
+    return `${major.toFixed(price.minorUnitExponent)} ${price.currencyCode}`;
+  }
 }

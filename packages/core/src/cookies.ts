@@ -5,10 +5,14 @@
  *   - csrf:    the sign-out form's value, `SameSite=Strict`, set with the session;
  *   - return:  the page a sign-out started on, kept while the app signs the
  *              member out (the app always returns to `<origin>/`); 10 minutes;
- *   - new:     v0.2.0, `1` when the code verify made or completed the account
- *              (`isNewAccount`); the session's life; only the server reads it;
  *   - ticket:  v0.2.0, the open code step (ticket, email, offer, times), so a
- *              reload after the mail app resumes the step; 10 minutes.
+ *              reload after the mail app resumes the step, and "Send a new
+ *              code" can start again with the stored email once the code has
+ *              expired; 1 hour;
+ *   - proof:   v0.2.0, the verified-email proof from the code step (checkout
+ *              v3.2 §4.3), `SameSite=Lax`, for `proofExpiresInSeconds`. Only
+ *              the site's server reads it: it never reaches page JavaScript
+ *              or an address.
  * All `__Host-` names, `HttpOnly`, `Secure`, `Path=/`. A removing `Set-Cookie`
  * carries `Secure` and `Path=/` too, or the browser ignores it and the cookie
  * stays. `insecureLocalCookies` (local `http://localhost` only) drops the
@@ -20,8 +24,8 @@ export interface CookieNames {
   session: string;
   csrf: string;
   return: string;
-  newAccount: string;
   ticket: string;
+  proof: string;
 }
 
 export const SECURE_COOKIE_NAMES: CookieNames = Object.freeze({
@@ -29,8 +33,8 @@ export const SECURE_COOKIE_NAMES: CookieNames = Object.freeze({
   session: "__Host-zw_session",
   csrf: "__Host-zw_csrf",
   return: "__Host-zw_return",
-  newAccount: "__Host-zw_new",
   ticket: "__Host-zw_ticket",
+  proof: "__Host-zw_proof",
 });
 
 export const LOCAL_COOKIE_NAMES: CookieNames = Object.freeze({
@@ -38,13 +42,13 @@ export const LOCAL_COOKIE_NAMES: CookieNames = Object.freeze({
   session: "zw_session",
   csrf: "zw_csrf",
   return: "zw_return",
-  newAccount: "zw_new",
   ticket: "zw_ticket",
+  proof: "zw_proof",
 });
 
 export const START_COOKIE_MAX_AGE_S = 600;
 export const RETURN_COOKIE_MAX_AGE_S = 600;
-export const TICKET_COOKIE_MAX_AGE_S = 600;
+export const TICKET_COOKIE_MAX_AGE_S = 3600;
 
 export function cookieNames(insecureLocalCookies: boolean): CookieNames {
   return insecureLocalCookies ? LOCAL_COOKIE_NAMES : SECURE_COOKIE_NAMES;

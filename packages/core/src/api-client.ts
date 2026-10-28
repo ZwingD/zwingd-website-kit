@@ -244,14 +244,25 @@ function checkoutFailure(res: PostResult & { ok: false }): CheckoutResult<never>
   return { ok: false, error: res.error };
 }
 
+/**
+ * Who a checkout call is for: a member's website session (the token string),
+ * or, v0.2.0 (checkout v3.2 §5, A1), a verified buyer's proof with the buyer's
+ * IP. The API takes exactly one of `sessionToken` or `checkoutProof`.
+ */
+export type CheckoutBuyer = string | { checkoutProof: string; buyerIp: string };
+
+function buyerFields(buyer: CheckoutBuyer): Record<string, string> {
+  return typeof buyer === "string" ? { sessionToken: buyer } : { checkoutProof: buyer.checkoutProof, buyerIp: buyer.buyerIp };
+}
+
 /** C4 `checkout/quote`. Never throws. */
 export async function checkoutQuote(
   config: WebsiteKitConfig,
-  sessionToken: string,
+  buyer: CheckoutBuyer,
   input: MemberQuoteInput,
   timeoutMs: number = CHECKOUT_QUOTE_TIMEOUT_MS
 ): Promise<CheckoutResult<MemberQuote>> {
-  const res = await post(config, "checkout/quote", { sessionToken, ...input }, timeoutMs);
+  const res = await post(config, "checkout/quote", { ...buyerFields(buyer), ...input }, timeoutMs);
   if (!res.ok) return checkoutFailure(res);
   const quote = memberQuote(res.body);
   return quote ? { ok: true, body: quote } : { ok: false, error: "unavailable" };
@@ -263,11 +274,11 @@ export async function checkoutQuote(
  */
 export async function checkoutStart(
   config: WebsiteKitConfig,
-  sessionToken: string,
+  buyer: CheckoutBuyer,
   input: MemberStartInput,
   timeoutMs: number = CHECKOUT_START_TIMEOUT_MS
 ): Promise<CheckoutResult<MemberCheckoutSession>> {
-  const res = await post(config, "checkout/start", { sessionToken, ...input }, timeoutMs);
+  const res = await post(config, "checkout/start", { ...buyerFields(buyer), ...input }, timeoutMs);
   if (!res.ok) return checkoutFailure(res);
   const session = checkoutSession(res.body);
   return session ? { ok: true, body: session } : { ok: false, error: "unavailable" };
@@ -278,11 +289,12 @@ export function isSessionToken(value: unknown): value is string {
 }
 
 // ---------------------------------------------------------------------------
-// Website code sign-in (checkout v3.1, spec §4) and app sign-in (§6.5)
+// Website email verification (checkout v3.2, spec §4) and the proof (§4.3, §6, A3)
 // ---------------------------------------------------------------------------
 
-/** The refusal reasons the code calls answer (spec §4). */
+/** The refusal reasons the code and proof calls answer (spec §4, §10b; contract "Refusal reasons"). */
 export const CODE_REASONS = [
+  "WEBSITE_CODE_DISABLED",
   "WEBSITE_CODE_EMAIL_INVALID",
   "WEBSITE_CODE_INVALID",
   "WEBSITE_CODE_EXPIRED",
@@ -291,6 +303,10 @@ export const CODE_REASONS = [
   "WEBSITE_TERMS_REQUIRED",
   "BOT_CHECK_FAILED",
   "BOT_CHECK_UNAVAILABLE",
+  "CHECKOUT_PROOF_INVALID",
+  "CHECKOUT_PROOF_EMAIL_MISMATCH",
+  "CHECKOUT_PROOF_UNAVAILABLE",
+  "EMAIL_VERIFICATION_REQUIRED",
 ] as const;
 export type CodeReason = (typeof CODE_REASONS)[number];
 
@@ -309,12 +325,14 @@ export interface CodeTicket {
   resendAvailableAt: string;
 }
 
+/**
+ * What `code/verify` answers (§4.3): the verified-email proof and its life.
+ * No account, no session, nothing about membership. For the website's SERVER
+ * only: the proof never reaches page JavaScript or an address.
+ */
 export interface CodeVerified {
-  sessionToken: string;
-  expiresAt: string;
-  member: { firstName: string | null; lastName: string | null };
-  /** For the website's SERVER only: never answered to a browser. */
-  isNewAccount: boolean;
+  proof: string;
+  proofExpiresInSeconds: number;
 }
 
 /** A legal document the step showed, as the gateway reads it: both fields 1-64 characters. */
@@ -362,8 +380,6 @@ function codeTicket(raw: unknown): CodeTicket | null {
   return { ticketId: t.ticketId, codeLength: t.codeLength, codeExpiresInSeconds: Math.floor(t.codeExpiresInSeconds), resendAvailableAt: t.resendAvailableAt };
 }
 
-const nameOf = (value: unknown): string | null => (typeof value === "string" && value !== "" ? value : null);
-
 /** Spec 4.1 `code/start`. Never throws; never retried. */
 export async function codeStart(
   config: WebsiteKitConfig,
@@ -388,42 +404,81 @@ export async function codeResend(
   return ticket ? { ok: true, body: ticket } : { ok: false, error: "unavailable" };
 }
 
+/** The proof is opaque (at least 32 random bytes); the kit only checks it is cookie-safe. */
+export const PROOF_PATTERN = /^[A-Za-z0-9_-]{32,512}$/;
+const NONCE = /^[A-Za-z0-9_-]{16,512}$/;
+const lifeOf = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
+
 /** Spec 4.3 `code/verify`. Never throws, and never retried: a code works once. */
 export async function codeVerify(config: WebsiteKitConfig, input: CodeVerifyInput, timeoutMs: number = CODE_CALL_TIMEOUT_MS): Promise<CodeResult<CodeVerified>> {
   const res = await post(config, "code/verify", { ...input }, timeoutMs);
   if (!res.ok) return codeFailure(res);
   const raw = res.body as Record<string, unknown> | null;
-  // The gateway answers identity's fields without its `status` (session-handover-routes.ts).
-  if (!raw || typeof raw.sessionToken !== "string" || !TOKEN.test(raw.sessionToken) || !isTime(raw.expiresAt)) {
-    return { ok: false, error: "unavailable" };
-  }
-  const m = (raw.member ?? {}) as Record<string, unknown>;
-  return {
-    ok: true,
-    body: {
-      sessionToken: raw.sessionToken,
-      expiresAt: raw.expiresAt,
-      member: { firstName: nameOf(m.firstName), lastName: nameOf(m.lastName) },
-      isNewAccount: raw.isNewAccount === true,
-    },
-  };
+  const life = lifeOf(raw?.proofExpiresInSeconds);
+  if (!raw || typeof raw.proof !== "string" || !PROOF_PATTERN.test(raw.proof) || life === null) return { ok: false, error: "unavailable" };
+  // Only these two fields: anything else the API might add is never passed on.
+  return { ok: true, body: { proof: raw.proof, proofExpiresInSeconds: life } };
 }
 
-const APP_CODE = /^[0-9a-f]{64}$/;
+/** Which thank-you button: a new buyer (or a pending learner) finishes sign-up; a member goes to the course. */
+export type ContinueAs = "sign-up" | "member";
 
-/** §6.5 `app-code`: a 60 s one-time code for the app's claim, or `login_required`. Never throws. */
-export async function appCode(
+/** Contract `checkout-proof/context`: server-side only; does not use the proof up. Never throws. */
+export async function proofContext(
   config: WebsiteKitConfig,
-  input: { sessionToken: string; codeChallenge: string },
+  input: { proof: string },
   timeoutMs: number = CODE_CALL_TIMEOUT_MS
-): Promise<CodeResult<{ code: string }>> {
-  const res = await post(config, "app-code", { sessionToken: input.sessionToken, codeChallenge: input.codeChallenge }, timeoutMs);
+): Promise<CodeResult<{ continueAs: ContinueAs; proofExpiresInSeconds: number }>> {
+  const res = await post(config, "checkout-proof/context", { proof: input.proof }, timeoutMs);
   if (!res.ok) return codeFailure(res);
-  const code = (res.body as { code?: unknown } | null)?.code;
-  return typeof code === "string" && APP_CODE.test(code) ? { ok: true, body: { code } } : { ok: false, error: "unavailable" };
+  const raw = res.body as Record<string, unknown> | null;
+  const continueAs = raw?.continueAs;
+  const life = lifeOf(raw?.proofExpiresInSeconds);
+  if ((continueAs !== "sign-up" && continueAs !== "member") || life === null) return { ok: false, error: "unavailable" };
+  return { ok: true, body: { continueAs, proofExpiresInSeconds: life } };
 }
 
-export type DropOffStage = "code_sent" | "verified";
+/** The app's continue route (A3, A4): an https address whose path is exactly `/session/checkout-continue`. */
+export const APP_CONTINUE_PATH = "/session/checkout-continue";
+
+function continueUrlOf(value: unknown, local: boolean): string | null {
+  if (typeof value !== "string") return null;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  const schemeOk = url.protocol === "https:" || (local && url.protocol === "http:");
+  if (!schemeOk || url.username || url.password || url.search || url.hash || url.pathname !== APP_CONTINUE_PATH) return null;
+  return url.href;
+}
+
+/**
+ * Contract `checkout-proof/continue` (A3): a 60 s single-use nonce for the
+ * app's continue route, minted when the buyer presses the thank-you button,
+ * never on a page load. Does not use the proof up. Never throws.
+ */
+export async function proofContinue(
+  config: WebsiteKitConfig,
+  input: { proof: string },
+  timeoutMs: number = CODE_CALL_TIMEOUT_MS
+): Promise<CodeResult<{ nonce: string; nonceExpiresInSeconds: number; continueUrl: string }>> {
+  const res = await post(config, "checkout-proof/continue", { proof: input.proof }, timeoutMs);
+  if (!res.ok) return codeFailure(res);
+  const raw = res.body as Record<string, unknown> | null;
+  const continueUrl = continueUrlOf(raw?.continueUrl, config.insecureLocalCookies);
+  const life = lifeOf(raw?.nonceExpiresInSeconds);
+  if (!raw || typeof raw.nonce !== "string" || !NONCE.test(raw.nonce) || !continueUrl || life === null) return { ok: false, error: "unavailable" };
+  return { ok: true, body: { nonce: raw.nonce, nonceExpiresInSeconds: life, continueUrl } };
+}
+
+/**
+ * The site reports "code sent" only: identity records "verified" itself when
+ * a verify succeeds (v3.2 B5).
+ */
+export type DropOffStage = "code_sent";
 
 /** Spec §5 drop-off site leg. Fire-and-forget: the answer is ignored, and it never throws. */
 export async function reportDropOff(

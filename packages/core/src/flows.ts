@@ -17,9 +17,10 @@
  *                           that are cached or static and read the member in
  *                           the browser.
  *
- * v0.2.0 adds the code step and the app link (code-routes.ts):
- * /session/code-step, /session/code-start, /session/code-resend,
- * /session/code-verify, /session/app and /session/app-code.
+ * v0.2.0 adds the code step before payment and the thank-you continue
+ * (code-routes.ts, checkout v3.2): /session/code-step, /session/code-start,
+ * /session/code-resend, /session/code-verify, /session/code-pay and
+ * /session/checkout-continue.
  *
  * Every answer carries `Cache-Control: no-store` and `Referrer-Policy:
  * no-referrer`. No token, secret, verifier or code is ever logged, thrown or
@@ -27,7 +28,7 @@
  */
 import { endSession, exchangeCode, isSessionToken } from "./api-client.ts";
 import { createAccountLinks } from "./account.ts";
-import { CODE_PATHS, createCodeRoutes } from "./code-routes.ts";
+import { CODE_PATHS, createCodeRoutes, type CheckoutContinue } from "./code-routes.ts";
 import { resolveConfig, type WebsiteKitConfig, type WebsiteKitConfigInput } from "./config.ts";
 import {
   clearCookie,
@@ -149,19 +150,20 @@ export interface WebsiteKit extends MemberReader {
   codeStep(req: RequestView): Promise<ResponseView>;
   /** v0.2.0 `POST /session/code-start` (same-site POST + CSRF). */
   codeStart(req: RequestView): Promise<ResponseView>;
-  /** v0.2.0 `POST /session/code-resend` (same-site POST + CSRF). */
+  /** v0.2.0 `POST /session/code-resend` (same-site POST + CSRF); an expired ticket starts again with the stored email. */
   codeResend(req: RequestView): Promise<ResponseView>;
-  /** v0.2.0 `POST /session/code-verify` (same-site POST + CSRF); sets the session. */
+  /** v0.2.0 `POST /session/code-verify` (same-site POST + CSRF): proof cookie, re-quote, and payment or the new price. No session. */
   codeVerify(req: RequestView): Promise<ResponseView>;
-  /** v0.2.0 `GET /session/app?to=`: the site's link into the app. */
-  app(req: RequestView): Promise<ResponseView>;
-  /** v0.2.0 `GET /session/app-code?state=&code_challenge=`: the app's claim asks for a one-time code. */
-  appCode(req: RequestView): Promise<ResponseView>;
+  /** v0.2.0 `POST /session/code-pay` (same-site POST + CSRF): "Pay {amount}" with the held proof. */
+  codePay(req: RequestView): Promise<ResponseView>;
+  /** v0.2.0 `POST /session/checkout-continue` (same-site POST + CSRF): the thank-you press; mints the nonce and answers the form to the app. */
+  checkoutContinue(req: RequestView): Promise<ResponseView>;
   /**
-   * v0.2.0: true when this browser's session came from a code verify that made
-   * or completed the account. Server only (the cookie is HttpOnly).
+   * v0.2.0, server only: the thank-you button ("Continue sign-up" / "Go to my
+   * course") from a server-side read of the proof context, or null when this
+   * browser holds no proof that is still good. Never mints a nonce.
    */
-  isNewAccountBuyer(cookies: Record<string, string>): boolean;
+  checkoutContinueFor(cookies: Record<string, string>): Promise<CheckoutContinue | null>;
   /** Route a request to any /session/* route above; null when the path is none of them. */
   handle(req: RequestView): Promise<ResponseView | null>;
   /**
@@ -327,7 +329,7 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
     };
   }
 
-  code = createCodeRoutes({ config, names, members, csrfFor, sameOriginRead });
+  code = createCodeRoutes({ config, names, csrfFor, sameOriginRead });
 
   function signOutReturn(req: RequestView): ResponseView | null {
     if (req.method !== "GET" && req.method !== "HEAD") return null;
@@ -350,9 +352,9 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
     codeStart: code.codeStart,
     codeResend: code.codeResend,
     codeVerify: code.codeVerify,
-    app: code.app,
-    appCode: code.appCode,
-    isNewAccountBuyer: code.isNewAccountBuyer,
+    codePay: code.codePay,
+    checkoutContinue: code.checkoutContinue,
+    checkoutContinueFor: code.checkoutContinueFor,
     async handle(req) {
       const path = new URL(req.url, config.origin).pathname;
       if (path === SESSION_PATHS.start) return start(req);
@@ -363,8 +365,8 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
       if (path === SESSION_PATHS.codeStart) return code.codeStart(req);
       if (path === SESSION_PATHS.codeResend) return code.codeResend(req);
       if (path === SESSION_PATHS.codeVerify) return code.codeVerify(req);
-      if (path === SESSION_PATHS.app) return code.app(req);
-      if (path === SESSION_PATHS.appCode) return code.appCode(req);
+      if (path === SESSION_PATHS.codePay) return code.codePay(req);
+      if (path === SESSION_PATHS.checkoutContinue) return code.checkoutContinue(req);
       return null;
     },
     csrfFor,

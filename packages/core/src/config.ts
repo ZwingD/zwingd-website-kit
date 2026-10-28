@@ -4,6 +4,7 @@
  * `WebsiteKitConfigError` naming the SETTING, never its value: the client
  * secret must never appear in an error, a log or a page.
  */
+import type { RequestView } from "./flows.ts";
 import { savedPath } from "./saved-path.ts";
 
 export interface WebsiteKitConfigInput {
@@ -49,12 +50,17 @@ export interface WebsiteKitConfigInput {
    */
   buyerIpFrom?: BuyerIpResolver;
   /**
-   * v0.2.0 app sign-in from the website code (`ZWINGD_APP_SIGN_IN=on`). Off by
-   * default: `/session/app` then opens the plain app address (normal sign-in).
-   * Turn it on only once the app serves `/session/claim`.
+   * v0.2.0: the visitor's country (a master-data country id, 24 hex) for the
+   * code step's quote and start with the proof, from the site's own source
+   * (e.g. the host's geo header). Never the request body. `createMemberCheckout`
+   * uses it too when it is not given its own. Default: none (the API's
+   * pricing rule then decides).
    */
-  appSignIn?: boolean;
+  visitorCountry?: VisitorCountryResolver | null;
 }
+
+/** The visitor's country as a master-data country id (24 hex), from the site's own source; null for none. */
+export type VisitorCountryResolver = (req: RequestView) => string | null | undefined | Promise<string | null | undefined>;
 
 /** Reads the buyer's IP from the request headers (lower-case names); null or undefined when unknown. */
 export type BuyerIpResolver = (headers: Record<string, string | undefined>) => string | null | undefined;
@@ -72,7 +78,7 @@ export interface WebsiteKitConfig {
   accountPath: string | null;
   coursePath: string | null;
   buyerIpFrom: BuyerIpResolver;
-  appSignIn: boolean;
+  visitorCountry: VisitorCountryResolver | null;
 }
 
 export class WebsiteKitConfigError extends Error {
@@ -195,7 +201,7 @@ export function resolveConfig(input: WebsiteKitConfigInput): WebsiteKitConfig {
     accountPath: appPath(input.accountPath, "accountPath"),
     coursePath: coursePathOf(input.coursePath),
     buyerIpFrom: buyerIpFromOf(input.buyerIpFrom),
-    appSignIn: input.appSignIn === true,
+    visitorCountry: visitorCountryOf(input.visitorCountry),
   };
 }
 
@@ -205,17 +211,17 @@ function buyerIpFromOf(value: unknown): BuyerIpResolver {
   return value as BuyerIpResolver;
 }
 
-/** `ZWINGD_APP_SIGN_IN`: on only for `on` or `true`. */
-export function appSignInFromEnv(value: string | undefined): boolean {
-  const v = (value ?? "").trim().toLowerCase();
-  return v === "on" || v === "true";
+function visitorCountryOf(value: unknown): VisitorCountryResolver | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "function") throw new WebsiteKitConfigError("visitorCountry");
+  return value as VisitorCountryResolver;
 }
 
 /** The settings from the standard environment names (server side only). */
 export function configFromEnv(
   env: Record<string, string | undefined>,
   extra: Partial<
-    Pick<WebsiteKitConfigInput, "insecureLocalCookies" | "timeoutMs" | "fetch" | "now" | "accountPath" | "coursePath" | "buyerIpFrom" | "appSignIn">
+    Pick<WebsiteKitConfigInput, "insecureLocalCookies" | "timeoutMs" | "fetch" | "now" | "accountPath" | "coursePath" | "buyerIpFrom" | "visitorCountry">
   > = {},
 ): WebsiteKitConfig {
   return resolveConfig({
@@ -224,7 +230,6 @@ export function configFromEnv(
     realm: env.ZWINGD_REALM ?? "",
     clientSecret: env.ZWINGD_SESSION_CLIENT_SECRET ?? "",
     origin: env.ZWINGD_SITE_ORIGIN ?? "",
-    appSignIn: appSignInFromEnv(env.ZWINGD_APP_SIGN_IN),
     ...extra,
   });
 }

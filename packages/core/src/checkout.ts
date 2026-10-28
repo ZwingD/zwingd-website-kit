@@ -36,6 +36,7 @@ import {
   type MemberStartInput,
 } from "./api-client.ts";
 import type { RequestView, ResponseView, WebsiteKit } from "./flows.ts";
+import type { VisitorCountryResolver } from "./config.ts";
 import { sameSitePost } from "./same-site.ts";
 
 export { CHECKOUT_QUOTE_TIMEOUT_MS, CHECKOUT_START_TIMEOUT_MS } from "./api-client.ts";
@@ -97,11 +98,14 @@ export type MemberQuoteCheck =
   | { status: "unavailable" }
   | { status: "invalid-request" };
 
-/** The visitor's country as a master-data country id (24 hex), from the site's own source; null for none. */
-export type VisitorCountryResolver = (req: RequestView) => string | null | undefined | Promise<string | null | undefined>;
+export type { VisitorCountryResolver } from "./config.ts";
 
 export interface MemberCheckoutOptions {
-  /** Where the visitor's country comes from (e.g. the host's geo header mapped to a country id). Never the request body. */
+  /**
+   * Where the visitor's country comes from (e.g. the host's geo header mapped
+   * to a country id). Never the request body. Default: the kit's own
+   * `visitorCountry` setting (v0.2.0), else none.
+   */
   visitorCountry?: VisitorCountryResolver;
   /** For tests: the call timeouts. Default the contract's 10 s and 30 s. */
   quoteTimeoutMs?: number;
@@ -158,10 +162,12 @@ export function createMemberCheckout(kit: WebsiteKit, options: MemberCheckoutOpt
   });
 
 
+  const countryResolver = options.visitorCountry ?? config.visitorCountry;
+
   async function visitorCountryOf(req: RequestView): Promise<string | undefined> {
-    if (!options.visitorCountry) return undefined;
+    if (!countryResolver) return undefined;
     try {
-      return id(await options.visitorCountry(req));
+      return id(await countryResolver(req));
     } catch {
       return undefined;
     }
