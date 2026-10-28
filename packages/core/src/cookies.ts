@@ -4,7 +4,11 @@
  *   - session: the session token; until `expiresAt`;
  *   - csrf:    the sign-out form's value, `SameSite=Strict`, set with the session;
  *   - return:  the page a sign-out started on, kept while the app signs the
- *              member out (the app always returns to `<origin>/`); 10 minutes.
+ *              member out (the app always returns to `<origin>/`); 10 minutes;
+ *   - new:     v0.2.0, `1` when the code verify made or completed the account
+ *              (`isNewAccount`); the session's life; only the server reads it;
+ *   - ticket:  v0.2.0, the open code step (ticket, email, offer, times), so a
+ *              reload after the mail app resumes the step; 10 minutes.
  * All `__Host-` names, `HttpOnly`, `Secure`, `Path=/`. A removing `Set-Cookie`
  * carries `Secure` and `Path=/` too, or the browser ignores it and the cookie
  * stays. `insecureLocalCookies` (local `http://localhost` only) drops the
@@ -16,6 +20,8 @@ export interface CookieNames {
   session: string;
   csrf: string;
   return: string;
+  newAccount: string;
+  ticket: string;
 }
 
 export const SECURE_COOKIE_NAMES: CookieNames = Object.freeze({
@@ -23,6 +29,8 @@ export const SECURE_COOKIE_NAMES: CookieNames = Object.freeze({
   session: "__Host-zw_session",
   csrf: "__Host-zw_csrf",
   return: "__Host-zw_return",
+  newAccount: "__Host-zw_new",
+  ticket: "__Host-zw_ticket",
 });
 
 export const LOCAL_COOKIE_NAMES: CookieNames = Object.freeze({
@@ -30,10 +38,13 @@ export const LOCAL_COOKIE_NAMES: CookieNames = Object.freeze({
   session: "zw_session",
   csrf: "zw_csrf",
   return: "zw_return",
+  newAccount: "zw_new",
+  ticket: "zw_ticket",
 });
 
 export const START_COOKIE_MAX_AGE_S = 600;
 export const RETURN_COOKIE_MAX_AGE_S = 600;
+export const TICKET_COOKIE_MAX_AGE_S = 600;
 
 export function cookieNames(insecureLocalCookies: boolean): CookieNames {
   return insecureLocalCookies ? LOCAL_COOKIE_NAMES : SECURE_COOKIE_NAMES;

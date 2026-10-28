@@ -12,7 +12,7 @@ The [README](../README.md) is the code reference for the kit: every route, prop 
 4. [Member sign-in: log in, My account, sign out](#4-member-sign-in-log-in-my-account-sign-out)
 5. [Guest checkout: the checkout pop-up](#5-guest-checkout-the-checkout-pop-up)
 6. [The return page](#6-the-return-page)
-7. [Member Buy Now](#7-member-buy-now)
+7. [Member Buy Now](#7-member-buy-now) (and [verify email before payment](#7a-verify-the-buyers-email-before-payment-v020))
 8. [Testing and fixtures](#8-testing-and-fixtures)
 9. [Going live](#9-going-live)
 10. [Troubleshooting](#10-troubleshooting)
@@ -78,6 +78,9 @@ Your **server** environment holds these. None of them may reach the browser. On 
 | `ZWINGD_SESSION_CLIENT_SECRET` | The client secret for this website's origin: `zsh_` followed by 64 hex characters | Member sign-in |
 | `ZWINGD_SITE_ORIGIN` | This website's origin, exactly as it was listed | Member sign-in |
 | `ZWINGD_INSECURE_LOCAL_COOKIES` | `true` for local development on `http://localhost` only. The kit refuses it when `NODE_ENV=production` | Local development |
+| `ZWINGD_APP_SIGN_IN` | `on` once the workspace's app serves `/session/claim` (v0.2.0); default `off` | App sign-in after the code step |
+
+The code step (v0.2.0) also needs the buyer's IP. The kit's default `buyerIpFrom` reads the first `x-forwarded-for` hop, else `x-real-ip`. That is right on Vercel and behind a load balancer that overwrites the header. Anywhere else, pass `buyerIpFrom` to `configFromEnv`.
 
 The kit checks every setting when it starts. A missing or malformed one throws `WebsiteKitConfigError`, which names the setting and never its value.
 
@@ -188,6 +191,25 @@ Act on the result:
 | `fallback` with `refused` or `unavailable` | Say checkout isn't available for this course right now, or open your guest checkout |
 
 The README's section 7 has every field and the record your return page reads.
+
+## 7a. Verify the buyer's email before payment (v0.2.0)
+
+A workspace can ask every self-serve buyer to verify their email before paying (`websiteCheckoutStatus.verifyEmail` is `"before-payment"`). Its guest checkout start is then refused, so your pop-up shows the code step instead.
+
+1. **Read the status** in the browser: `websiteCheckoutStatus { available verifyEmail }`. `verifyEmail` is the string `"off"` or `"before-payment"`.
+2. **Off:** your pop-up is unchanged.
+3. **On, signed out:** email → code → verified → pay. Use `useCodeStep({ offer })` and draw the step with `CODE_STEP_COPY`. Skip your old email check: there is no `checking` step.
+4. **On, signed in:** skip the code step and use member Buy Now (section 7).
+5. **After verify** the buyer is a signed-in member: read the member quote and call `startMemberCheckout` with `state.signOutToken`. Show "Your account is ready." once when `state.notice` is `account-ready`.
+6. **Return page:** on the server, `isNewAccountBuyer(kit)` gives the label: "Continue sign-up" when the code step made the account, else "Go to my course". Both link to `appLinkHref(to)` (the course, or the learning page) and send the same analytics event with no properties.
+
+The code step's rules:
+
+- The copy is fixed (signed). You may restyle it, but not reword it.
+- 6-digit input with `autocomplete="one-time-code"` and `inputmode="numeric"`; paste works; focus moves to it when the step opens.
+- The terms line, when the workspace requires acceptance, shows for every buyer, new or existing: "By continuing you agree to the {terms link}." Send what it showed as `acceptedDocuments`.
+- Tie errors to the input with `aria-describedby` and `role="alert"`. Announce the countdown politely, only when it starts and when it is ready.
+- Never put the "account ready" notice in an address, storage or analytics.
 
 ## 8. Testing and fixtures
 

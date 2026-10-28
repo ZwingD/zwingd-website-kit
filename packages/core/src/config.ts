@@ -40,7 +40,24 @@ export interface WebsiteKitConfigInput {
    * learning page (`/communities/learning`).
    */
   coursePath?: string | null;
+  /**
+   * v0.2.0 code step: the buyer's own IP from the request headers (lower-case
+   * names), forwarded to the code calls as `buyerIp` (the code budget's
+   * requester). Default `forwardedBuyerIp`: the first `x-forwarded-for` hop,
+   * else `x-real-ip`, which is right only behind a proxy that overwrites them
+   * (Vercel, a load balancer). Anything that is not an IP is ignored.
+   */
+  buyerIpFrom?: BuyerIpResolver;
+  /**
+   * v0.2.0 app sign-in from the website code (`ZWINGD_APP_SIGN_IN=on`). Off by
+   * default: `/session/app` then opens the plain app address (normal sign-in).
+   * Turn it on only once the app serves `/session/claim`.
+   */
+  appSignIn?: boolean;
 }
+
+/** Reads the buyer's IP from the request headers (lower-case names); null or undefined when unknown. */
+export type BuyerIpResolver = (headers: Record<string, string | undefined>) => string | null | undefined;
 
 export interface WebsiteKitConfig {
   apiUrl: string;
@@ -54,6 +71,8 @@ export interface WebsiteKitConfig {
   now: () => number;
   accountPath: string | null;
   coursePath: string | null;
+  buyerIpFrom: BuyerIpResolver;
+  appSignIn: boolean;
 }
 
 export class WebsiteKitConfigError extends Error {
@@ -119,6 +138,25 @@ function coursePathOf(value: unknown): string | null {
   return path;
 }
 
+const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+const IPV6 = /^[0-9A-Fa-f:.]{2,45}$/;
+
+/** `value` when it is an IPv4 or IPv6 address (brackets dropped), else null. */
+export function ipOf(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const ip = value.trim().replace(/^\[(.*)\]$/, "$1");
+  if (IPV4.test(ip)) return ip;
+  if (ip.includes(":") && IPV6.test(ip)) return ip.toLowerCase();
+  return null;
+}
+
+/** The default `buyerIpFrom`: the first `x-forwarded-for` hop, else `x-real-ip`. */
+export function forwardedBuyerIp(headers: Record<string, string | undefined>): string | null {
+  const forwarded = headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.trim() !== "") return ipOf(forwarded.split(",")[0]);
+  return ipOf(headers["x-real-ip"]);
+}
+
 /** Check and complete the settings once, at start-up. */
 export function resolveConfig(input: WebsiteKitConfigInput): WebsiteKitConfig {
   const local = input.insecureLocalCookies === true;
@@ -149,13 +187,29 @@ export function resolveConfig(input: WebsiteKitConfigInput): WebsiteKitConfig {
     now: input.now ?? Date.now,
     accountPath: appPath(input.accountPath, "accountPath"),
     coursePath: coursePathOf(input.coursePath),
+    buyerIpFrom: buyerIpFromOf(input.buyerIpFrom),
+    appSignIn: input.appSignIn === true,
   };
+}
+
+function buyerIpFromOf(value: unknown): BuyerIpResolver {
+  if (value === undefined || value === null) return forwardedBuyerIp;
+  if (typeof value !== "function") throw new WebsiteKitConfigError("buyerIpFrom");
+  return value as BuyerIpResolver;
+}
+
+/** `ZWINGD_APP_SIGN_IN`: on only for `on` or `true`. */
+export function appSignInFromEnv(value: string | undefined): boolean {
+  const v = (value ?? "").trim().toLowerCase();
+  return v === "on" || v === "true";
 }
 
 /** The settings from the standard environment names (server side only). */
 export function configFromEnv(
   env: Record<string, string | undefined>,
-  extra: Partial<Pick<WebsiteKitConfigInput, "insecureLocalCookies" | "timeoutMs" | "fetch" | "now" | "accountPath" | "coursePath">> = {},
+  extra: Partial<
+    Pick<WebsiteKitConfigInput, "insecureLocalCookies" | "timeoutMs" | "fetch" | "now" | "accountPath" | "coursePath" | "buyerIpFrom" | "appSignIn">
+  > = {},
 ): WebsiteKitConfig {
   return resolveConfig({
     apiUrl: env.ZWINGD_API_URL ?? "",
@@ -163,6 +217,7 @@ export function configFromEnv(
     realm: env.ZWINGD_REALM ?? "",
     clientSecret: env.ZWINGD_SESSION_CLIENT_SECRET ?? "",
     origin: env.ZWINGD_SITE_ORIGIN ?? "",
+    appSignIn: appSignInFromEnv(env.ZWINGD_APP_SIGN_IN),
     ...extra,
   });
 }

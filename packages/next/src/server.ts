@@ -87,3 +87,14 @@ export async function getMemberQuote(
 export async function accountUrl(kit: WebsiteKit): Promise<string> {
   return kit.accountUrl();
 }
+
+/**
+ * v0.2.0: true when this buyer's website session came from a code verify that
+ * made or completed their account (checkout v3.1, `isNewAccount`). Read from
+ * the kit's HttpOnly cookie, so it never reaches the browser. For the return
+ * page's button label ("Continue sign-up" / "Go to my course"): pass the page
+ * only the label, never the flag.
+ */
+export async function isNewAccountBuyer(kit: WebsiteKit): Promise<boolean> {
+  return kit.isNewAccountBuyer(await cookieMap());
+}

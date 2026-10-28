@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.2.0
+
+Checkout v3.1: verify the buyer's email before payment (ZwingD/zwingd-backend#1963). Needs the API's website code routes; a site that does not use them is unchanged.
+
+- New routes (Node and Next serve them through the same `[action]` route):
+  - `POST /session/code-start`, `/session/code-resend`, `/session/code-verify`: the code step, same-site POST with `csrf` (the kit's one rule). They call the API's `code/start|resend|verify` with the buyer's IP. Refusals answer the browser `{ reason, retryAfterSeconds?, fields? }` only, never the API's sentence.
+  - Verify sets the session like `/session/callback` (`__Host-zw_session`, `__Host-zw_csrf`, keeping the page's form value) and, for a new account only, `__Host-zw_new=1` (HttpOnly, the session's life). The browser gets `{ member, notice: 'account-ready' | null, signOutToken }`; `isNewAccount` is never in a browser answer.
+  - The ticket is kept in the HttpOnly `__Host-zw_ticket` cookie for 10 minutes, so a reload after the mail app resumes the step. `GET /session/code-step` answers the form value for a signed-out visitor and the open step.
+  - `GET /session/app?to=` (saved-path rule): 303 to the app's `/session/claim` when `appSignIn` is on and the buyer is signed in, else to the plain app address. `GET /session/app-code?state=&code_challenge=`: the app's claim gets a one-time code (`<appUrl>/session/claim/callback?code=&state=`) or `error=login_required`; `no-store`, `no-referrer`.
+  - `POST /session/end` also clears `__Host-zw_new` and `__Host-zw_ticket`.
+  - Drop-off: after start (`code_sent`) and verify (`verified`) the kit reports the stage when the step has an `offer`; fire-and-forget.
+- Config: `buyerIpFrom(headers)` (default `forwardedBuyerIp`: first `x-forwarded-for` hop, else `x-real-ip`) and `appSignIn` (default false; `ZWINGD_APP_SIGN_IN=on` through `configFromEnv`).
+- `@zwingd-ce/website-kit-next/server`: `isNewAccountBuyer(kit)`.
+- `@zwingd-ce/website-kit-next/client`: `useCodeStep()` (headless: email → sending → code → verifying → verified; countdown; errors by reason; double-submit guard; focus on the code input), `createCodeStepClient`, and from the core `CODE_STEP_COPY` (the spec's copy, word for word), `fillCopy`, `codeStepReducer`, `resendCountdown`, `appLinkHref(to)`.
+- `CookieNames` gains `newAccount` and `ticket`.
+- Example site: a code step on the course page, and the return page's label from `isNewAccountBuyer`.
+
 ## 0.1.3
 
 - Fix: `signOutReturn` (Next.js) now answers an absolute `Location` on the request's own origin. Next's proxy adapter parses a proxy's `Location` with no base, so 0.1.2's relative saved path threw "Invalid URL" and the site's `/` answered 500 for a member coming back from the app's sign-out. Express and Node http (`createSessionHandler`) were not affected. Sites on 0.1.2 with `signOutReturn` in `proxy.ts` / `middleware.ts` should update.

@@ -1,36 +1,27 @@
-"use client";
 // Where the buyer comes back after paying: <origin>/checkout/return/<orderId>.
-// A real site confirms the payment here with the stored order token
-// (confirmHostedCheckoutPayment and myOrder, #1866); this example only shows
-// that the token was kept for this order in this tab, never in the address.
-import { use, useEffect, useState } from "react";
+// The SERVER reads the kit's HttpOnly new-account cookie (checkout v3.1) and
+// hands the page only a label: "Continue sign-up" for a buyer whose account the
+// code step made, else "Go to my course". Both open the app through
+// /session/app (appLinkHref), which signs the buyer in to the app when
+// ZWINGD_APP_SIGN_IN is on.
+import { appLinkHref } from "@zwingd-ce/website-kit-next";
+import { isNewAccountBuyer } from "@zwingd-ce/website-kit-next/server";
 
-import { orderStorageKey } from "@/components/buy-now";
+import { CheckoutReturn } from "@/components/checkout-return";
+import { zwingd } from "@/lib/zwingd";
 
-export default function CheckoutReturn({ params }: { params: Promise<{ orderId: string }> }) {
-  const { orderId } = use(params);
-  const [found, setFound] = useState<boolean | null>(null);
+export const dynamic = "force-dynamic";
 
-  useEffect(() => {
-    try {
-      const raw = window.sessionStorage.getItem(orderStorageKey(orderId));
-      const record = raw ? (JSON.parse(raw) as { orderId?: unknown; token?: unknown }) : null;
-      setFound(record?.orderId === orderId && typeof record.token === "string");
-    } catch {
-      setFound(false);
-    }
-  }, [orderId]);
-
-  if (found === null) return <p>Checking your order…</p>;
-  return found ? (
-    <section>
-      <h1>Thank you</h1>
-      <p>Your order {orderId} is on its way. This page would now confirm the payment with the stored order token.</p>
-    </section>
-  ) : (
-    <section>
-      <h1>We can&apos;t show this order here</h1>
-      <p>Open this page in the browser you paid in.</p>
-    </section>
-  );
+export default async function CheckoutReturnPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ orderId: string }>;
+  searchParams: Promise<{ course?: string }>;
+}) {
+  const { orderId } = await params;
+  const { course } = await searchParams;
+  const label = (await isNewAccountBuyer(zwingd())) ? "Continue sign-up" : "Go to my course";
+  const to = typeof course === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(course) ? `/communities/courses/${course}` : "/communities/learning";
+  return <CheckoutReturn orderId={orderId} continueLabel={label} continueHref={appLinkHref(to)} />;
 }

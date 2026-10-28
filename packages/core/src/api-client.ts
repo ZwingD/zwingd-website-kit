@@ -276,3 +276,160 @@ export async function checkoutStart(
 export function isSessionToken(value: unknown): value is string {
   return typeof value === "string" && TOKEN.test(value);
 }
+
+// ---------------------------------------------------------------------------
+// Website code sign-in (checkout v3.1, spec §4) and app sign-in (§6.5)
+// ---------------------------------------------------------------------------
+
+/** The refusal reasons the code calls answer (spec §4). */
+export const CODE_REASONS = [
+  "WEBSITE_CODE_EMAIL_INVALID",
+  "WEBSITE_CODE_INVALID",
+  "WEBSITE_CODE_EXPIRED",
+  "WEBSITE_CODE_LOCKED",
+  "WEBSITE_CODE_RATE_LIMITED",
+  "WEBSITE_TERMS_REQUIRED",
+  "BOT_CHECK_FAILED",
+  "BOT_CHECK_UNAVAILABLE",
+] as const;
+export type CodeReason = (typeof CODE_REASONS)[number];
+
+/** The code calls' timeout: the contract's 10 s. */
+export const CODE_CALL_TIMEOUT_MS = 10_000;
+
+/** A code call's refusal: the API's `reason` when it has the standard shape, else a v1 word. */
+export type CodeResult<T> =
+  | { ok: true; body: T }
+  | { ok: false; error: CallFailure | "refused" | "login_required"; reason?: string; retryAfterSeconds?: number; fields?: string[]; status?: number };
+
+export interface CodeTicket {
+  ticketId: string;
+  codeLength: number;
+  codeExpiresInSeconds: number;
+  resendAvailableAt: string;
+}
+
+export interface CodeVerified {
+  sessionToken: string;
+  expiresAt: string;
+  member: { firstName: string | null; lastName: string | null };
+  /** For the website's SERVER only: never answered to a browser. */
+  isNewAccount: boolean;
+}
+
+/** A legal document the step showed, as the gateway reads it: both fields 1-64 characters. */
+export interface AcceptedDocument {
+  type: string;
+  version: string;
+}
+
+export interface CodeVerifyInput {
+  ticketId: string;
+  code: string;
+  buyerIp: string;
+  firstName?: string;
+  lastName?: string;
+  acceptedDocuments?: AcceptedDocument[];
+}
+
+const TICKET = /^[A-Za-z0-9_-]{1,64}$/;
+const FIELD = /^[A-Za-z][A-Za-z0-9_.]{0,63}$/;
+
+function codeFailure(res: PostResult & { ok: false }): CodeResult<never> {
+  const raw = res.raw as { error?: unknown; reason?: unknown; retryAfterSeconds?: unknown; fields?: unknown } | null | undefined;
+  if (raw?.error === "login_required") return { ok: false, error: "login_required" };
+  if (typeof raw?.reason === "string" && REASON.test(raw.reason)) {
+    const retry = typeof raw.retryAfterSeconds === "number" && Number.isFinite(raw.retryAfterSeconds) && raw.retryAfterSeconds >= 0 ? Math.ceil(raw.retryAfterSeconds) : undefined;
+    const fields = Array.isArray(raw.fields) ? raw.fields.filter((f): f is string => typeof f === "string" && FIELD.test(f)).slice(0, 20) : undefined;
+    return {
+      ok: false,
+      error: "refused",
+      reason: raw.reason,
+      ...(retry === undefined ? {} : { retryAfterSeconds: retry }),
+      ...(fields && fields.length > 0 ? { fields } : {}),
+      ...(res.status === undefined ? {} : { status: res.status }),
+    };
+  }
+  return { ok: false, error: res.error, ...(res.status === undefined ? {} : { status: res.status }) };
+}
+
+function codeTicket(raw: unknown): CodeTicket | null {
+  const t = raw as Record<string, unknown> | null;
+  if (!t || typeof t !== "object" || typeof t.ticketId !== "string" || !TICKET.test(t.ticketId)) return null;
+  if (typeof t.codeLength !== "number" || !Number.isInteger(t.codeLength) || t.codeLength < 4 || t.codeLength > 12) return null;
+  if (typeof t.codeExpiresInSeconds !== "number" || !(t.codeExpiresInSeconds > 0)) return null;
+  if (!isTime(t.resendAvailableAt)) return null;
+  return { ticketId: t.ticketId, codeLength: t.codeLength, codeExpiresInSeconds: Math.floor(t.codeExpiresInSeconds), resendAvailableAt: t.resendAvailableAt };
+}
+
+const nameOf = (value: unknown): string | null => (typeof value === "string" && value !== "" ? value : null);
+
+/** Spec 4.1 `code/start`. Never throws; never retried. */
+export async function codeStart(
+  config: WebsiteKitConfig,
+  input: { email: string; buyerIp: string; botToken?: string },
+  timeoutMs: number = CODE_CALL_TIMEOUT_MS
+): Promise<CodeResult<CodeTicket>> {
+  const res = await post(config, "code/start", { email: input.email, buyerIp: input.buyerIp, ...(input.botToken ? { botToken: input.botToken } : {}) }, timeoutMs);
+  if (!res.ok) return codeFailure(res);
+  const ticket = codeTicket(res.body);
+  return ticket ? { ok: true, body: ticket } : { ok: false, error: "unavailable" };
+}
+
+/** Spec 4.2 `code/resend`. Never throws. */
+export async function codeResend(
+  config: WebsiteKitConfig,
+  input: { ticketId: string; buyerIp: string },
+  timeoutMs: number = CODE_CALL_TIMEOUT_MS
+): Promise<CodeResult<CodeTicket>> {
+  const res = await post(config, "code/resend", { ticketId: input.ticketId, buyerIp: input.buyerIp }, timeoutMs);
+  if (!res.ok) return codeFailure(res);
+  const ticket = codeTicket(res.body);
+  return ticket ? { ok: true, body: ticket } : { ok: false, error: "unavailable" };
+}
+
+/** Spec 4.3 `code/verify`. Never throws, and never retried: a code works once. */
+export async function codeVerify(config: WebsiteKitConfig, input: CodeVerifyInput, timeoutMs: number = CODE_CALL_TIMEOUT_MS): Promise<CodeResult<CodeVerified>> {
+  const res = await post(config, "code/verify", { ...input }, timeoutMs);
+  if (!res.ok) return codeFailure(res);
+  const raw = res.body as Record<string, unknown> | null;
+  // The gateway answers identity's fields without its `status` (session-handover-routes.ts).
+  if (!raw || typeof raw.sessionToken !== "string" || !TOKEN.test(raw.sessionToken) || !isTime(raw.expiresAt)) {
+    return { ok: false, error: "unavailable" };
+  }
+  const m = (raw.member ?? {}) as Record<string, unknown>;
+  return {
+    ok: true,
+    body: {
+      sessionToken: raw.sessionToken,
+      expiresAt: raw.expiresAt,
+      member: { firstName: nameOf(m.firstName), lastName: nameOf(m.lastName) },
+      isNewAccount: raw.isNewAccount === true,
+    },
+  };
+}
+
+const APP_CODE = /^[0-9a-f]{64}$/;
+
+/** §6.5 `app-code`: a 60 s one-time code for the app's claim, or `login_required`. Never throws. */
+export async function appCode(
+  config: WebsiteKitConfig,
+  input: { sessionToken: string; codeChallenge: string },
+  timeoutMs: number = CODE_CALL_TIMEOUT_MS
+): Promise<CodeResult<{ code: string }>> {
+  const res = await post(config, "app-code", { sessionToken: input.sessionToken, codeChallenge: input.codeChallenge }, timeoutMs);
+  if (!res.ok) return codeFailure(res);
+  const code = (res.body as { code?: unknown } | null)?.code;
+  return typeof code === "string" && APP_CODE.test(code) ? { ok: true, body: { code } } : { ok: false, error: "unavailable" };
+}
+
+export type DropOffStage = "code_sent" | "verified";
+
+/** Spec §5 drop-off site leg. Fire-and-forget: the answer is ignored, and it never throws. */
+export async function reportDropOff(
+  config: WebsiteKitConfig,
+  input: { email: string; offer: string; stage: DropOffStage },
+  timeoutMs: number = CODE_CALL_TIMEOUT_MS
+): Promise<void> {
+  await post(config, "checkout/drop-off", { email: input.email, offer: input.offer, stage: input.stage }, timeoutMs);
+}

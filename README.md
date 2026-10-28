@@ -44,6 +44,9 @@ Your **server** environment holds these. None of them may reach the browser, so 
 | `ZWINGD_SESSION_CLIENT_SECRET` | The client secret for this website's origin (`zsh_` and 64 hex characters) |
 | `ZWINGD_SITE_ORIGIN` | This website's origin, exactly as listed, for example `https://www.example.org` |
 | `ZWINGD_INSECURE_LOCAL_COOKIES` | `true` for local development on `http://localhost` only. The kit refuses it when `NODE_ENV=production` |
+| `ZWINGD_APP_SIGN_IN` | v0.2.0, default `off`. `on` once the workspace's app serves `/session/claim`: `/session/app` then signs a code-verified buyer in to the app (section 7a) |
+
+v0.2.0 also takes `buyerIpFrom(headers)` in code (not an environment name): how your server finds the buyer's IP for the code step. The default reads the first `x-forwarded-for` hop, else `x-real-ip`, which is right only behind a proxy that overwrites them (Vercel, a load balancer). Behind anything else, pass your own.
 
 The example site also reads `ZWINGD_COUNTRY_IDS`. That variable is the example's own way to price by the visitor's country (section 7), not a kit setting.
 
@@ -56,6 +59,12 @@ The example site also reads `ZWINGD_COUNTRY_IDS`. That variable is the example's
 | `POST /session/end` | "Sign out". A same-site form POST only; the website and the app both sign out. The form's `next` (the page it was on) brings the member back there afterwards: see "Back to the page after sign-out" |
 | `GET /session/me` | Who is signed in, by name only, and where "Go to my account" opens, for pages that read the member in the browser (client mode) |
 | `POST /session/checkout` | Member checkout: the member's "Buy now" (section 7). Served when you pass a checkout to the routes |
+| `GET /session/code-step` | v0.2.0. The code step's form value (`formToken`, sent as `csrf`) and the open step a reload resumes (`pending`) |
+| `POST /session/code-start` | v0.2.0. Sends the buyer a code (`email`, `offer?`, `botToken?`). Same-site POST with `csrf` |
+| `POST /session/code-resend` | v0.2.0. A new code on the same ticket. Same-site POST with `csrf` |
+| `POST /session/code-verify` | v0.2.0. Checks the code (`code`, `firstName?`, `lastName?`, `acceptedDocuments?` as JSON) and signs the buyer in on the website. Same-site POST with `csrf` |
+| `GET /session/app?to=<path>` | v0.2.0. The site's link into the app (`appLinkHref(to)`). Signs the buyer in to the app when `ZWINGD_APP_SIGN_IN=on`, else opens the plain app address |
+| `GET /session/app-code` | v0.2.0. Called by the app's claim, never linked by the site: a one-time code for the app, or `error=login_required` |
 
 ## 5. Next.js (App Router)
 
@@ -227,6 +236,33 @@ Before it navigates, `startMemberCheckout` stores one record in `sessionStorage`
 - `member: true` tells your return page this is a member's order, so it can skip the guest's "Log in with …" hint.
 - The return page confirms the payment and reads the order with `token`, exactly as for a guest. The token is never put in an address.
 
+## 7a. Verify the buyer's email before payment (v0.2.0)
+
+When the workspace's `websiteCheckoutStatus.verifyEmail` is `"before-payment"`, a signed-out buyer verifies their email by code before paying, and then buys as a member (section 7). The guest checkout start is refused for such a workspace. The kit runs the step; your page only draws it.
+
+```tsx
+"use client";
+import { CODE_STEP_COPY, fillCopy, useCodeStep } from "@zwingd-ce/website-kit-next/client";
+
+const step = useCodeStep({ offer });           // reads /session/code-step on mount
+step.sendCode(email, { botToken });            // email → sending → code
+step.verify(code, { acceptedDocuments });      // code → verifying → verified
+step.resend(); step.changeEmail();
+step.state.error?.message;                     // the spec's line for the reason
+step.resendLabel;                              // "Send a new code in 42s" / "Send a new code"
+<input ref={step.codeInputRef} autoComplete="one-time-code" inputMode="numeric" />
+<button disabled={step.busy}>{CODE_STEP_COPY.verifyButton}</button>
+```
+
+- **Copy.** `CODE_STEP_COPY` is the signed copy, word for word. Restyle it; never reword it. `fillCopy(line, { email })` fills `{email}`, `{seconds}` and `{minutes}`.
+- **Errors** are keyed by `reason`: a wrong or expired code stays on the step and focus goes back to the input; locked or rate-limited shows the wait; anything else is the generic line.
+- **One verify per submit.** A send, resend or verify in flight ignores another one, and `busy` is true while it runs.
+- **After `verified`** the buyer is signed in on your website. Continue as a member: `getMemberQuote`, then `startMemberCheckout` with `state.signOutToken` as `csrf`. When `state.notice` is `account-ready`, show "Your account is ready." once. Never store the notice or send it anywhere.
+- **New account.** `isNewAccount` never reaches the browser. The kit keeps it in the HttpOnly `__Host-zw_new` cookie for the session's life. On the return page's server, `await isNewAccountBuyer(kit)` (`@zwingd-ce/website-kit-next/server`) picks the label: "Continue sign-up" or "Go to my course". Pass the page the label only. Both buttons link to `appLinkHref(to)` and send the same analytics event.
+- **Reload.** The open ticket lives in the HttpOnly `__Host-zw_ticket` cookie for 10 minutes, so a reload after the mail app resumes the code step without a new code. The browser never sees the ticket.
+- **Drop-off.** With `offer`, the kit reports `code_sent` and `verified` to the API. Fire-and-forget: it never blocks the step.
+- **A custom storefront** calls the same API routes from its own server: `POST /api/external/session-handover/code/start|resend|verify` with `realm`, `origin` and `Authorization: Bearer <secret>`, plus the buyer's IP as `buyerIp`.
+
 ## 8. What never to do
 
 - Never prefix a `ZWINGD_*` setting with `NEXT_PUBLIC_`, or send the client secret, the session token or the order token anywhere but where the kit sends them.
@@ -234,7 +270,8 @@ Before it navigates, `startMemberCheckout` stores one record in `sessionStorage`
 - Never take a return address from the browser. The kit always returns to `<origin>/checkout/return/<orderId>`.
 - Never send a price the page did not show. `expectedTotalMinor` is the member quote's `totalMinor`, unchanged.
 - Never start a hand-over on a page view. Only a click on "Log in" starts one.
-- Never show a sign-in form, or collect a password or a code, on your website.
+- Never show a sign-in form or collect a password on your website. The only code your website takes is the checkout code step (section 7a), through the kit's routes.
+- Never send `isNewAccount`, or anything derived from it, to the browser, an address, storage or analytics. Pass the return page a label only.
 
 ## What the kit does for you
 

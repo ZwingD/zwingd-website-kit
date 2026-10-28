@@ -1,5 +1,5 @@
 /**
- * The /session/* routes (start, callback, end, me) as App Router route handlers, on the Web
+ * The /session/* routes (start, callback, end, me; v0.2.0 the code step and app link) as App Router route handlers, on the Web
  * `Request` / `Response` only, so they run on Node and edge alike:
  *
  *   // app/session/[action]/route.ts

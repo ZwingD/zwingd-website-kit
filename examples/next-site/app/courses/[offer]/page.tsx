@@ -6,6 +6,7 @@ import { headers } from "next/headers";
 import { getMemberQuote, signOutToken } from "@zwingd-ce/website-kit-next/server";
 
 import { BuyNow } from "@/components/buy-now";
+import { CodeStep } from "@/components/code-step";
 import { OwnedCourse } from "@/components/owned-course";
 import { countryIdFor, memberCheckout, zwingd } from "@/lib/zwingd";
 
@@ -35,7 +36,8 @@ export default async function CoursePage({
       <section>
         <h1>Course</h1>
         <p>Log in to buy as a member, or use the guest checkout.</p>
-        <GuestCheckoutStandIn />
+        {/* Checkout v3.1: a workspace with verifyEmail "before-payment" verifies the buyer's email first. */}
+        {process.env.EXAMPLE_VERIFY_EMAIL === "before-payment" ? <CodeStep offer={offer} /> : <GuestCheckoutStandIn />}
       </section>
     );
   }
