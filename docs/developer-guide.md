@@ -78,9 +78,8 @@ Your **server** environment holds these. None of them may reach the browser. On 
 | `ZWINGD_SESSION_CLIENT_SECRET` | The client secret for this website's origin: `zsh_` followed by 64 hex characters | Member sign-in |
 | `ZWINGD_SITE_ORIGIN` | This website's origin, exactly as it was listed | Member sign-in |
 | `ZWINGD_INSECURE_LOCAL_COOKIES` | `true` for local development on `http://localhost` only. The kit refuses it when `NODE_ENV=production` | Local development |
-| `ZWINGD_APP_SIGN_IN` | `on` once the workspace's app serves `/session/claim` (v0.2.0); default `off` | App sign-in after the code step |
 
-The code step (v0.2.0) also needs the buyer's IP. The kit's default `buyerIpFrom` reads `x-real-ip`, else the last `x-forwarded-for` hop (both written by your own proxy; the first hop is whatever the browser sent). That is right on Vercel and behind one load balancer. Anywhere else, pass `buyerIpFrom` to `configFromEnv`.
+The code step (v0.2.0) also needs the buyer's IP. The kit's default `buyerIpFrom` reads `x-real-ip`, else the last `x-forwarded-for` hop (both written by your own proxy; the first hop is whatever the browser sent). That is right on Vercel and behind one load balancer. Anywhere else, pass `buyerIpFrom` to `configFromEnv`. Pass `visitorCountry` too if you price by the visitor's country: the code step's quote uses it, and member checkout inherits it.
 
 The kit checks every setting when it starts. A missing or malformed one throws `WebsiteKitConfigError`, which names the setting and never its value.
 
@@ -194,22 +193,26 @@ The README's section 7 has every field and the record your return page reads.
 
 ## 7a. Verify the buyer's email before payment (v0.2.0)
 
-A workspace can ask every self-serve buyer to verify their email before paying (`websiteCheckoutStatus.verifyEmail` is `"before-payment"`). Its guest checkout start is then refused, so your pop-up shows the code step instead.
+A workspace can ask every self-serve buyer to prove their email before paying (`websiteCheckoutStatus.verifyEmail` is `"before-payment"`). Its guest checkout start is then refused, so your pop-up shows the code step instead.
+
+The code step creates **no account and no session**. A right code gives your server a short-lived proof of the email. The kit keeps it in an HttpOnly cookie, and payment goes ahead against it. The account is made in the app after payment, when the buyer presses the thank-you button.
 
 1. **Read the status** in the browser: `websiteCheckoutStatus { available verifyEmail }`. `verifyEmail` is the string `"off"` or `"before-payment"`.
 2. **Off:** your pop-up is unchanged.
-3. **On, signed out:** email → code → verified → pay. Use `useCodeStep({ offer })` and draw the step with `CODE_STEP_COPY`. Skip your old email check: there is no `checking` step.
-4. **On, signed in:** skip the code step and use member Buy Now (section 7).
-5. **After verify** the buyer is a signed-in member: read the member quote and call `startMemberCheckout` with `state.signOutToken`. Show "Your account is ready." once when `state.notice` is `account-ready`.
-6. **Return page:** on the server, `isNewAccountBuyer(kit)` gives the label: "Continue sign-up" when the code step made the account, else "Go to my course". Both link to `appLinkHref(to)` (the course, or the learning page) and send the same analytics event with no properties.
+3. **On, signed in:** skip the code step and use member Buy Now (section 7).
+4. **On, signed out:** email → code → payment. Use `useCodeStep({ offer, expectedTotalMinor, storageKey, terms })` and draw the step with `CODE_STEP_COPY`. `expectedTotalMinor` is the guest total your pop-up showed.
+5. **After the code** the kit re-quotes with the proof. The same total goes straight to payment ("Taking you to payment…"). A different total (a member's price) shows "Your member price is {amount}." and a "Pay {amount}" button (`step.priceLine`, `step.payLabel`, `step.pay()`).
+6. **Return page:** on the server, `getCheckoutContinue(kit)` answers the button, "Continue sign-up" (a new buyer) or "Go to my course" (a member), or `null` without a proof. Draw it with `<CheckoutContinueButton next={next} />`. Its press is a form POST to the kit, which mints a one-time code for the app at that moment and sends the buyer on with another form POST. When it is `null`, show your usual course link.
 
 The code step's rules:
 
-- The copy is fixed (signed). You may restyle it, but not reword it.
-- 6-digit input with `autocomplete="one-time-code"` and `inputmode="numeric"`; paste works; focus moves to it when the step opens.
-- The terms line, when the workspace requires acceptance, shows for every buyer, new or existing: "By continuing you agree to the {terms link}." Send what it showed as `acceptedDocuments`.
-- Tie errors to the input with `aria-describedby` and `role="alert"`. Announce the countdown politely, only when it starts and when it is ready.
-- Never put the "account ready" notice in an address, storage or analytics.
+- The copy is fixed (signed). You may restyle it, but not reword it. That includes the terms tick box, "I agree to the {terms links}.", where you draw your links to the documents.
+- One code input: spread `step.codeInputProps` on it. It has `autocomplete="one-time-code"` and `inputmode="numeric"` and no `maxLength`, so a pasted "123 456" becomes `123456`. Don't split it into one box per digit or catch Tab: Tab must leave the field.
+- Focus moves to the code input when the step opens and after a wrong or expired code. With terms required and not ticked, focus moves to the tick box and the step stays usable.
+- Tie errors to their inputs: the props carry `aria-invalid` and `aria-describedby` with `step.ids`; draw each message with the matching id. `state.error.field` says which input.
+- Put `<CodeStepLiveRegion step={step} />` in the step and keep it mounted. It announces the countdown politely when it starts and when it is ready, never every second.
+- On an expired code, "Send a new code" starts again with the email the step holds.
+- Never put the proof or the continue code in an address, storage, analytics or a log. The kit never gives them to the page.
 
 ## 8. Testing and fixtures
 

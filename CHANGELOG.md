@@ -4,20 +4,49 @@
 
 ## 0.2.0
 
-Checkout v3.1: verify the buyer's email before payment (ZwingD/zwingd-backend#1963). Needs the API's website code routes; a site that does not use them is unchanged.
+Checkout v3.2: the buyer proves their email by code before payment (ZwingD/zwingd-backend#1963, spec v3.2). Needs the API's website code and proof routes (zwingd-backend#1984); a site that does not use them is unchanged. Not released yet: the `v*` tag needs the operator's go.
 
-- New routes (Node and Next serve them through the same `[action]` route):
-  - `POST /session/code-start`, `/session/code-resend`, `/session/code-verify`: the code step, same-site POST with `csrf` (the kit's one rule). They call the API's `code/start|resend|verify` with the buyer's IP. Refusals answer the browser `{ reason, retryAfterSeconds?, fields? }` only, never the API's sentence.
-  - Verify sets the session like `/session/callback` (`__Host-zw_session`, `__Host-zw_csrf`, keeping the page's form value) and, for a new account only, `__Host-zw_new=1` (HttpOnly, the session's life). The browser gets `{ member, notice: 'account-ready' | null, signOutToken }`; `isNewAccount` is never in a browser answer.
-  - The ticket is kept in the HttpOnly `__Host-zw_ticket` cookie for 10 minutes, so a reload after the mail app resumes the step. `GET /session/code-step` answers the form value for a signed-out visitor and the open step.
-  - `GET /session/app?to=` (saved-path rule): 303 to the app's `/session/claim` when `appSignIn` is on and the buyer is signed in, else to the plain app address. `GET /session/app-code?state=&code_challenge=`: the app's claim gets a one-time code (`<appUrl>/session/claim/callback?code=&state=`) or `error=login_required`; `no-store`, `no-referrer`.
-  - `POST /session/end` also clears `__Host-zw_new` and `__Host-zw_ticket`.
-  - Drop-off: after start (`code_sent`) and verify (`verified`) the kit reports the stage when the step has an `offer`; fire-and-forget.
-- Config: `buyerIpFrom(headers)` (default `forwardedBuyerIp`: `x-real-ip`, else the last `x-forwarded-for` hop; never the browser-set first hop) and `appSignIn` (default false; `ZWINGD_APP_SIGN_IN=on` through `configFromEnv`).
-- `@zwingd-ce/website-kit-next/server`: `isNewAccountBuyer(kit)`.
-- `@zwingd-ce/website-kit-next/client`: `useCodeStep()` (headless: email → sending → code → verifying → verified; countdown; errors by reason; double-submit guard; focus on the code input), `createCodeStepClient`, and from the core `CODE_STEP_COPY` (the spec's copy, word for word), `fillCopy`, `codeStepReducer`, `resendCountdown`, `appLinkHref(to)`.
-- `CookieNames` gains `newAccount` and `ticket`.
-- Example site: a code step on the course page, and the return page's label from `isNewAccountBuyer`.
+The code step creates **no account and no session**. A right code gives the site's server a short-lived verified-email proof, held in an HttpOnly cookie; payment goes ahead against it; after payment the buyer continues into the app with the same proof.
+
+### Routes `handle()` now claims
+
+Node (`createSessionHandler`) and Next (`createSessionRoutes`) serve them through the same `/session/[action]` route. A site that already serves any of these paths itself must move it.
+
+- `GET /session/code-step`: same-origin read of the form value (`formToken`, posted as `csrf`) and the open step a reload resumes.
+- `POST /session/code-start`, `/session/code-resend`, `/session/code-verify`, `/session/code-pay`, `/session/checkout-continue`: same-site POST with `csrf` (the kit's one rule).
+  - start/resend/verify call the API's `code/start|resend|verify` with the buyer's IP. Refusals answer the browser `{ reason, retryAfterSeconds?, fields? }` only, never the API's sentence. `WEBSITE_CODE_DISABLED` passes through as 409.
+  - resend on an expired ticket (or one the API calls `WEBSITE_CODE_EXPIRED`) starts again with the stored email.
+  - verify keeps the proof in `__Host-zw_proof` (HttpOnly, Secure, SameSite=Lax, Path=/, Max-Age = `proofExpiresInSeconds`), then re-quotes with `checkoutProof` + `buyerIp`. Same total → `checkout/start` at once and `{ kind: "redirect", url, orderId, orderToken, ... }`; changed → `{ kind: "confirm-price", totalMinor, currencyCode, minorUnitExponent }`; also `already-owned` and `payment-failed { reason }`. The proof is never in an answer.
+  - code-pay is the "Pay {amount}" press: a start with the held proof at the shown total; PRICE_CHANGED quotes again once and answers `confirm-price`.
+  - checkout-continue is the thank-you press: `checkout-proof/context` + `checkout-proof/continue`, then a `text/html` page with no script (CSP `default-src 'none'`, `form-action` the app) whose form POSTs `nonce` to `continueUrl`, the visible button its submit. Any failure is a 303 to the app's address (normal sign-in).
+- `POST /session/end` also clears `__Host-zw_ticket` and `__Host-zw_proof`.
+- Drop-off: the kit reports `code_sent` after a start when the step has an `offer`; fire-and-forget. Identity records "verified" itself.
+
+### TypeScript interface changes
+
+- `WebsiteKitConfigInput` (all optional): `buyerIpFrom(headers)` (default `forwardedBuyerIp`: `x-real-ip`, else the last `x-forwarded-for` hop; never the browser-set first hop) and `visitorCountry(req)` (the code step's quote; `createMemberCheckout` falls back to it).
+- `WebsiteKitConfig` (resolved) gains **required** `buyerIpFrom: BuyerIpResolver` and `visitorCountry: VisitorCountryResolver | null`. Code that builds a `WebsiteKitConfig` by hand instead of through `resolveConfig` / `configFromEnv` must add them.
+- `CookieNames` gains **required** `ticket` (`__Host-zw_ticket` / `zw_ticket`) and `proof` (`__Host-zw_proof` / `zw_proof`).
+- `WebsiteKit` gains **required** methods `codeStep`, `codeStart`, `codeResend`, `codeVerify`, `codePay`, `checkoutContinue` and `checkoutContinueFor(cookies)`. A hand-written `WebsiteKit` (a test double) must add them.
+- `SESSION_PATHS` gains `codeStep`, `codeStart`, `codeResend`, `codeVerify`, `codePay`, `checkoutContinue` (also as `CODE_PATHS`).
+- `VisitorCountryResolver` now lives in the config module; the export name is unchanged.
+- Core exports added: `CODE_PATHS`, `CODE_STEP_COPY`, `codeStepAnnouncement`, `codeStepError`, `codeStepReducer`, `fillCopy`, `formatAmount`, `initialCodeStep`, `normalizeCode`, `PROOF_GONE_REASONS`, `resendCountdown`, `UNAVAILABLE_REASON`, `CODE_CALL_TIMEOUT_MS`, `CODE_REASONS`, `APP_CONTINUE_PATH`, `forwardedBuyerIp`, `storeCheckoutOrder`, and the types `CheckoutContinue`, `CodeStepRead`, `CodeStepState`, `CodeStepAction`, `CodeStepError`, `CodeStepField`, `CodeStepName`, `CodeStepPayment`, `CodeStepPrice`, `CodeStepRefusal`, `CodeStepTicket`, `CodeStepCopyKey`, `PendingCodeStep`, `AcceptedDocument`, `CodeReason`, `ContinueAs`, `BuyerIpResolver`, `StoredVerifiedCheckout`.
+- `@zwingd-ce/website-kit-next/server`: `getCheckoutContinue(kit)`.
+- `@zwingd-ce/website-kit-next/client`: `useCodeStep(options)` (headless; `emailInputProps`, `codeInputProps`, `termsInputProps`, `ids`, `announcement`, `priceLine`, `payLabel`, `pay()`), `createCodeStepClient`, `CodeStepLiveRegion` (the kit's polite live region), `CheckoutContinueButton` (the thank-you form), and from the core the copy and state helpers above.
+
+### Upgrading from the v3.1 0.2.0 draft (PR #17 before this rework)
+
+Removed (spec v3.2 AC 17): `GET /session/app`, `GET /session/app-code`, `appLinkHref`, the `appSignIn` setting and `ZWINGD_APP_SIGN_IN` / `appSignInFromEnv`, `isNewAccount` (API and browser), `isNewAccountBuyer` (kit and `/server`), the `__Host-zw_new` cookie (`CookieNames.newAccount`), `CodeStepVerified`, `CodeStepNotice`, `state.notice`, `state.member`, `state.signOutToken`, the `verified` step and `CODE_STEP_COPY.accountReady`. A site on the draft must:
+
+1. Drop `ZWINGD_APP_SIGN_IN` from its environment and `appLinkHref` / `isNewAccountBuyer` from its code.
+2. Pass `useCodeStep` the purchase: `offer`, `expectedTotalMinor` (the guest total shown), `storageKey`, and `terms` when the workspace requires them. `verify()` no longer takes the code: spread `codeInputProps` on the one code input (no `maxLength`). Do not call `startMemberCheckout` after the step: it goes to payment itself, or to `confirm-price` with "Pay {amount}" (`step.pay()`).
+3. Draw the terms tick box ("I agree to the {terms links}.", `termsInputProps`) instead of "By continuing you agree to the {terms link}.", and put `<CodeStepLiveRegion step={step} />` in the step.
+4. On the return page: `getCheckoutContinue(kit)` on the server and `<CheckoutContinueButton next={next} />`, instead of the label from `isNewAccountBuyer` and a link to `/session/app`.
+5. If it prices by country, pass `visitorCountry` to the kit config (member checkout inherits it).
+
+### Example site
+
+The course page's code step with the shown guest total, terms and the live region; the return page's button from `getCheckoutContinue`.
 
 ## 0.1.3
 
