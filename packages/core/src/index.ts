@@ -37,6 +37,22 @@ export type {
   MemberQuote,
   MemberQuoteCheck,
 } from "./checkout.ts";
+// Member events (B2 + B4: gateway events/read and events/register).
+export { createMemberEvents, MEMBER_EVENT_READ_TIMEOUT_MS, MEMBER_EVENT_REGISTER_TIMEOUT_MS } from "./events.ts";
+export type {
+  MemberEvent,
+  MemberEventCheck,
+  MemberEventConsent,
+  MemberEventForm,
+  MemberEventQuestion,
+  MemberEventReadRefusal,
+  MemberEventRegisterRefusal,
+  MemberEventRegisterResult,
+  MemberEventRegistration,
+  MemberEvents,
+  MemberEventSeat,
+  MemberEventsOptions,
+} from "./events.ts";
 export { startMemberCheckout } from "./browser.ts";
 export { sameSitePost } from "./same-site.ts";
 export type { CheckoutStorage, StartMemberCheckoutOptions, StartMemberCheckoutResult, StoredMemberCheckout } from "./browser.ts";

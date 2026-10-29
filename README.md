@@ -292,7 +292,29 @@ One press on your website. The button POSTs (same-site, with `csrf`) to the kit'
 
 - **A custom storefront** calls the same API routes from its own server: `POST /api/external/session-handover/code/start|resend|verify`, then `checkout/quote` and `checkout/start` with `checkoutProof` and `buyerIp` (never from a browser), and `checkout-proof/context` and `checkout-proof/continue` for the thank-you page, each with `realm`, `origin` and `Authorization: Bearer <secret>`.
 
-## 8. What never to do
+## 8. Member events
+
+A member signed in on your website registers for an event without typing a name, an email or anything their profile already answers, and sees that they are registered. A visitor who is not signed in keeps your guest registration form.
+
+1. **Make it once on the server:** `const events = createMemberEvents(kit)`.
+2. **Read the member's own seat and form** from a same-origin route of yours (never in a cached page), on the server: `getMemberEvent(events, slug)` (Next: from `@zwingd-ce/website-kit-next/server`), or `events.getMemberEvent(cookies, slug)`. Answer it with `Cache-Control: no-store` and `Vary: Cookie`.
+   - `event.viewerStatus` is `REGISTERED`, `WAITLISTED` or null (no seat). `event.ended` is true once the event is over.
+   - `event.form` is null when nothing is asked (one-click register) or the event takes no in-app registration now. Otherwise ask only the questions whose `viewerPrefill` is null, the consents (unticked), and the phone only when `form.phone` is `REQUIRED`.
+3. **Register** from that route on a same-site POST: `registerMemberEvent(events, slug, { answers, consents, phone })`, sending only what the form asked. It is never retried.
+
+| `status` | What happened | What the page does |
+|---|---|---|
+| `ok` | Read: the member's seat and form. Register: `seat` is `REGISTERED` or `WAITLISTED` | Show the form, or the registered / waitlisted panel |
+| `signed-out` | No session cookie; the API was not asked | Show your guest form |
+| `ended` | The API said the session is over | Clear the cookie (`kit.clearSessionCookie()`), then show your guest form |
+| `refused` | `reason`: read `NOT_FOUND` or `NO_MEMBER_ROLE`; register `ALREADY_REGISTERED`, `ANSWER_INVALID` (with `fields`), `CONSENT_REQUIRED`, `FORM_CHANGED`, `CLOSED`, or another code | `NO_MEMBER_ROLE`: your guest form. `ALREADY_REGISTERED`: the registered panel. `FORM_CHANGED`: read again. Otherwise say why |
+| `not-available` | This API has no member events (404) | Show your guest form |
+| `unavailable` | Busy, down, rate limited, a timeout or a malformed answer | Say "Couldn't load your registration" with a Retry. Never fall back to the guest form for a signed-in member |
+| `invalid-request` | A malformed slug or registration (a bug in the page); the API was not asked | Fix the page |
+
+A consent's `labelHtml` is the workspace's own wording, sanitised by the platform; draw it as the guest form does.
+
+## 9. What never to do
 
 - Never prefix a `ZWINGD_*` setting with `NEXT_PUBLIC_`, or send the client secret, the session token or the order token anywhere but where the kit sends them.
 - Never log a token, the client secret or the order token. The kit itself logs nothing.
@@ -314,6 +336,7 @@ One press on your website. The button POSTs (same-site, with `csrf`) to the kit'
   - the session is dropped only on `active: false`, never on a 429, a 503 or a timeout;
   - contact details are answered only from a check under 60 seconds old, so use `freshMember` / `getCheckoutMember` before a checkout prefill.
 - **Member checkout:** the server calls the API with the client secret and the session cookie's token, waiting 10 s for a quote and 30 s for a start.
+- **Member events:** the same, waiting 10 s for a read and 15 s for a registration. Only the contract's fields are sent and kept; a registration is never retried.
 
 ## Local development
 

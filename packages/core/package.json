@@ -1,6 +1,6 @@
 {
   "name": "@zwingd-ce/website-kit",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Framework-free core of the Zwingd website kit: member sign-in through the workspace's app (session hand-over v1). No runtime dependency.",
   "type": "module",
   "main": "./dist/index.cjs",

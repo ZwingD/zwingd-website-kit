@@ -3,7 +3,7 @@
  * Router (Next 15 and 16).
  *
  *   "@zwingd-ce/website-kit-next"         createSessionRoutes + the core (server code)
- *   "@zwingd-ce/website-kit-next/server"  getMember, getCheckoutMember, signOutToken, getCheckoutContinue
+ *   "@zwingd-ce/website-kit-next/server"  getMember, getCheckoutMember, signOutToken, getMemberQuote, getCheckoutContinue, getMemberEvent, registerMemberEvent
  *   "@zwingd-ce/website-kit-next/client"  AccountButton, MemberProvider, useMember, useCodeStep, CodeStepLiveRegion, CheckoutContinueButton
  */
 export { createSessionRoutes, signOutReturn, toRequestView, toResponse } from "./routes.ts";

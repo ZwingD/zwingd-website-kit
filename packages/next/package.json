@@ -1,6 +1,6 @@
 {
   "name": "@zwingd-ce/website-kit-next",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Next.js App Router adapter of the Zwingd website kit: /session/* route handlers, server getMember, and an unstyled AccountButton.",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -33,7 +33,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "test": "node --test --test-force-exit --experimental-strip-types --conditions=@zwingd-ce/source --import ./test/tsx-loader.mjs 'test/**/*.test.ts'",
+    "test": "node --test --test-force-exit --experimental-test-module-mocks --experimental-strip-types --conditions=@zwingd-ce/source --import ./test/tsx-loader.mjs 'test/**/*.test.ts'",
     "type-check": "tsc --noEmit",
     "prepublishOnly": "pnpm build && pnpm test && pnpm type-check"
   },

@@ -13,9 +13,10 @@ The [README](../README.md) is the code reference for the kit: every route, prop 
 5. [Guest checkout: the checkout pop-up](#5-guest-checkout-the-checkout-pop-up)
 6. [The return page](#6-the-return-page)
 7. [Member Buy Now](#7-member-buy-now) (and [verify email before payment](#7a-verify-the-buyers-email-before-payment-v020))
-8. [Testing and fixtures](#8-testing-and-fixtures)
-9. [Going live](#9-going-live)
-10. [Troubleshooting](#10-troubleshooting)
+8. [Member event registration](#8-member-event-registration)
+9. [Testing and fixtures](#9-testing-and-fixtures)
+10. [Going live](#10-going-live)
+11. [Troubleshooting](#11-troubleshooting)
 
 ## 1. What you are building
 
@@ -214,7 +215,17 @@ The code step's rules:
 - On an expired code, "Send a new code" starts again with the email the step holds.
 - Never put the proof or the continue nonce in an address, storage, analytics or a log. The page never sees the proof. The nonce reaches only the button's press handler, which posts it to the app at once.
 
-## 8. Testing and fixtures
+## 8. Member event registration
+
+A member signed in on your website registers for an event with one click, or answers only what their profile cannot, and sees "Registered" afterwards. A visitor who is not signed in keeps your guest form.
+
+1. **On the server, make it once:** `createMemberEvents(kit)`.
+2. **Read the member's seat after the page loads,** through your own same-origin route that calls `getMemberEvent` on your server and answers `Cache-Control: no-store` and `Vary: Cookie`. The event page itself stays the same for everyone, as with the name in section 4.
+3. **Register** through the same route with `registerMemberEvent`, sending only what the member form asked.
+
+Act on the result: `ok` shows the form or the registered panel; `signed-out`, `not-available` and a `NO_MEMBER_ROLE` refusal show your guest form; `ended` clears the cookie, then shows the guest form; `unavailable` says "Couldn't load your registration" with a Retry, never the guest form. The README's section 8 has every field and refusal.
+
+## 9. Testing and fixtures
 
 **Run the kit's tests:**
 
@@ -244,11 +255,11 @@ pnpm -r type-check && pnpm -r test && pnpm -r build
 - Member Buy Now, and a member who already owns the course.
 - Every screen at 390 px wide, with the keyboard only.
 
-## 9. Going live
+## 10. Going live
 
 1. Ask the workspace admin to add your live origins to **Allowed websites**, and the platform team to list them for member sign-in. Each origin gets its own client secret.
 2. Put the live values in your hosting provider's server environment, marked secret where it can. Never commit them.
-3. Deploy, then run the checks in section 8 on the live site with one real purchase the workspace can refund.
+3. Deploy, then run the checks in section 9 on the live site with one real purchase the workspace can refund.
 4. Look at **Your websites** in the workspace's settings: your site should show member sign-in set up and checkout allowed.
 
 **What never to do:**
@@ -260,7 +271,7 @@ pnpm -r type-check && pnpm -r test && pnpm -r build
 - Never charge a price your page did not show, and never work out a price or who may buy yourself.
 - Never require a sign-in to buy.
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 | What you see | Likely cause | What to do |
 |---|---|---|

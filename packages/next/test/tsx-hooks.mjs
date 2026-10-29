@@ -10,6 +10,7 @@ import ts from "typescript";
 // Node's ESM resolver does not: name the file.
 export async function resolve(specifier, context, nextResolve) {
   if (specifier === "next/navigation") return nextResolve("next/navigation.js", context);
+  if (specifier === "next/headers") return nextResolve("next/headers.js", context);
   return nextResolve(specifier, context);
 }
 
