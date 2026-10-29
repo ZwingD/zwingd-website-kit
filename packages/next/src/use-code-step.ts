@@ -58,7 +58,9 @@ export interface UseCodeStepOptions {
    * country id (24 hex, the `_id` your guest quote and start take as
    * `country`), e.g. the one the buyer picked in your pop-up. The re-quote
    * after the code uses it, so a non-member sees the same total. Without it
-   * the kit's `visitorCountry` setting (the geo header) is used.
+   * the kit's `visitorCountry` setting (the geo header) is used. One of the two
+   * is needed: with neither, the API refuses a new buyer's start
+   * (`HOSTED_GUEST_INVALID`) after the code is spent.
    */
   country?: string | null;
   attribution?: CheckoutAttribution;

@@ -53,8 +53,10 @@ export interface WebsiteKitConfigInput {
    * v0.2.0: the visitor's country (a master-data country id, 24 hex) for the
    * code step's quote and start with the proof, from the site's own source
    * (e.g. the host's geo header). Never the request body. `createMemberCheckout`
-   * uses it too when it is not given its own. Default: none (the API's
-   * pricing rule then decides).
+   * uses it too when it is not given its own. Default: none. The code step
+   * needs a country for a buyer who is not an active member: this, or the
+   * `country` the page posts. With neither, the API refuses that buyer's start
+   * (`HOSTED_GUEST_INVALID`, field `visitorCountry`) after the code is spent.
    */
   visitorCountry?: VisitorCountryResolver | null;
 }
