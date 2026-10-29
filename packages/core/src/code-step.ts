@@ -8,8 +8,12 @@
  *     └──failed──────┘              │ └──failed──────┘       ├─ already-owned ─► owned
  *     └──────── changeEmail ────────┘                        └─ payment-failed ► pay-failed ─pay─► paying
  *
+ *   email ─resume─► resuming ─┬─ confirm-price ─► confirm-price ("Pay {amount}", Helm #18 on #1963)
+ *                             └─ proof gone, failed ─► email (no error: nothing the buyer did)
+ *
  * Also: a payment-failed whose reason means the proof is gone returns to email (the email kept); a failed pay
- * goes to pay-failed; changeEmail also leaves pay-failed and confirm-price.
+ * goes to pay-failed; changeEmail also leaves pay-failed and confirm-price. `resume` is a reload while the site's
+ * server still holds a proof for this offer: the step re-quotes with it and waits for "Pay {amount}".
  *
  * The code step creates no account and no session: a right code gives the
  * site's SERVER a verified-email proof (HttpOnly cookie), and the same request
@@ -29,7 +33,7 @@
 import type { CodeReason } from "./api-client.ts";
 
 /** The kit's own reasons (never from the API): a purchase it refused, no answer, an order token it could not keep. */
-export const KIT_REASONS = Object.freeze(["INVALID_REQUEST", "UNAVAILABLE", "STORAGE_UNAVAILABLE"] as const);
+export const KIT_REASONS = Object.freeze(["INVALID_REQUEST", "UNAVAILABLE", "STORAGE_UNAVAILABLE", "COUNTRY_REQUIRED"] as const);
 export type KitReason = (typeof KIT_REASONS)[number];
 
 /**
@@ -38,7 +42,10 @@ export type KitReason = (typeof KIT_REASONS)[number];
  */
 export type CodeStepReason = CodeReason | KitReason | "PRICE_CHANGED" | "ALREADY_ENROLLED" | "HOSTED_GUEST_INVALID" | (string & {});
 
-/** The step's copy, exactly as signed (spec §8a). A site may restyle it, never reword it. */
+/**
+ * The step's copy, exactly as signed (spec §8a; Helm's answers on #1963, 2026-10-29: #5 the proof and API lines,
+ * #16 the payment lines). A site may restyle it, never reword it. `chooseCountry` is the one line not yet signed.
+ */
 export const CODE_STEP_COPY = Object.freeze({
   heading: "Check your email",
   intro: "We sent a 6-digit code to {email}. Enter it to continue to payment.",
@@ -60,6 +67,22 @@ export const CODE_STEP_COPY = Object.freeze({
   /** A2: the re-quote after verify changed the total (member price). */
   memberPrice: "Your member price is {amount}.",
   payButton: "Pay {amount}",
+  /** #16: payment could not start after a right code; trying again can help. */
+  payStartFailed: "We couldn't start your payment. Try again.",
+  /** #16: payment was refused for good after a right code. `{workspace}` is the workspace's name. */
+  payFailed: "We couldn't take this payment. Try again, or contact {workspace}.",
+  /** #5 CHECKOUT_PROOF_INVALID (also EMAIL_VERIFICATION_REQUIRED): back to the email step. */
+  proofExpired: "Your email check has expired. Enter your email again to get a new code.",
+  /** #5 CHECKOUT_PROOF_EMAIL_MISMATCH. */
+  proofMismatch: "This isn't the email you checked. Enter your email again.",
+  /** #5 CHECKOUT_PROOF_UNAVAILABLE. */
+  proofUnavailable: "We couldn't continue just now. Try again in a moment.",
+  /** #5 WEBSITE_CODE_DISABLED. */
+  codesUnavailable: "Email codes aren't available here right now. Try again later.",
+  /** #5 the bot-check refusals (BOT_CHECK_FAILED, BOT_CHECK_UNAVAILABLE). */
+  botCheck: "We couldn't confirm you're a person. Try again.",
+  /** #4 COUNTRY_REQUIRED: no country is known, so no code was sent. ⚠️ Not yet signed (Helm). */
+  chooseCountry: "Choose your country to continue.",
   continueSignUp: "Continue sign-up",
   goToCourse: "Go to my course",
 });
@@ -71,10 +94,10 @@ export function fillCopy(line: string, values: Record<string, string | number>):
   return line.replace(/\{([a-z ]+)\}/g, (whole, name: string) => (name in values ? String(values[name]) : whole));
 }
 
-export type CodeStepName = "email" | "sending" | "code" | "verifying" | "confirm-price" | "paying" | "owned" | "pay-failed";
+export type CodeStepName = "email" | "sending" | "code" | "verifying" | "resuming" | "confirm-price" | "paying" | "owned" | "pay-failed";
 
 /** The input an error belongs to: the page ties the message to it (`aria-describedby`, `aria-invalid`). */
-export type CodeStepField = "email" | "code" | "terms" | "payment";
+export type CodeStepField = "email" | "code" | "terms" | "payment" | "country";
 
 export interface CodeStepError {
   /** The API's reason (`WEBSITE_CODE_INVALID`, ...), or `UNAVAILABLE` when it could not answer. */
@@ -154,6 +177,15 @@ export interface CodeStepRefusal {
   fields?: string[];
 }
 
+/**
+ * A proof the site's server still holds for an offer (GET /session/code-step `held`), for a reload: the step
+ * resumes at "Pay {amount}" (Helm #18). Only the email and the offer: never the proof, never membership.
+ */
+export interface HeldCodeStep {
+  email: string;
+  offer: string | null;
+}
+
 /** An open code step the kit's ticket cookie holds (GET /session/code-step), for a reload. */
 export interface PendingCodeStep {
   email: string;
@@ -173,7 +205,9 @@ export type CodeStepAction =
   | { type: "failed"; refusal: CodeStepRefusal; now: number }
   | { type: "terms"; accepted: boolean }
   | { type: "changeEmail" }
-  | { type: "restore"; pending: PendingCodeStep; now: number };
+  | { type: "restore"; pending: PendingCodeStep; now: number }
+  /** A reload while the server holds a proof for this offer (Helm #18): re-quote with it, then "Pay {amount}". */
+  | { type: "resume"; email: string };
 
 export const UNAVAILABLE_REASON = "UNAVAILABLE" satisfies KitReason;
 
@@ -229,10 +263,29 @@ export function codeStepError(refusal: CodeStepRefusal, during: "start" | "resen
       return { ...base, field, message: fillCopy(CODE_STEP_COPY.locked, { minutes: minutesOf(retry) }) };
     case "WEBSITE_TERMS_REQUIRED":
       return { ...base, field: "terms", message: CODE_STEP_COPY.terms };
+    case "COUNTRY_REQUIRED":
+      return { ...base, field: "country", message: CODE_STEP_COPY.chooseCountry };
+    case "WEBSITE_CODE_DISABLED":
+      return { ...base, field, message: CODE_STEP_COPY.codesUnavailable };
+    case "BOT_CHECK_FAILED":
+    case "BOT_CHECK_UNAVAILABLE":
+      return { ...base, field, message: CODE_STEP_COPY.botCheck };
+    case "CHECKOUT_PROOF_INVALID":
+    case "EMAIL_VERIFICATION_REQUIRED":
+      return { ...base, field, message: CODE_STEP_COPY.proofExpired };
+    case "CHECKOUT_PROOF_EMAIL_MISMATCH":
+      return { ...base, field, message: CODE_STEP_COPY.proofMismatch };
+    case "CHECKOUT_PROOF_UNAVAILABLE":
+      return { ...base, field, message: CODE_STEP_COPY.proofUnavailable };
     default:
+      // After a right code (#16): a payment that may start on a retry, or one refused for good.
+      if (during === "pay") return { ...base, field, message: PAY_RETRYABLE.has(refusal.reason) ? CODE_STEP_COPY.payStartFailed : CODE_STEP_COPY.payFailed };
       return { ...base, field, message: CODE_STEP_COPY.otherError };
   }
 }
+
+/** Payment refusals where trying again can help (no answer, a passing fault): "We couldn't start your payment." A rate limit says its own wait. */
+const PAY_RETRYABLE: ReadonlySet<string> = new Set(["UNAVAILABLE", "CHECKOUT_UNAVAILABLE"]);
 
 /** Invalid or expired: the buyer types again, so focus goes back to the input. */
 const refocuses = (reason: string) => reason === "WEBSITE_CODE_INVALID" || reason === "WEBSITE_CODE_EXPIRED";
@@ -279,8 +332,12 @@ export function codeStepReducer(state: CodeStepState, action: CodeStepAction): C
       if (state.step !== "confirm-price" && state.step !== "pay-failed") return state;
       return { ...state, step: "paying", error: null };
     case "answered": {
-      if (state.step !== "verifying" && state.step !== "paying") return state;
+      if (state.step !== "verifying" && state.step !== "paying" && state.step !== "resuming") return state;
       const a = action.answer;
+      // A resumed proof that is gone: the buyer starts from the email, with nothing to fix (no error).
+      if (state.step === "resuming" && a.kind === "payment-failed" && (PROOF_GONE_REASONS as readonly string[]).includes(a.reason)) {
+        return initialCodeStep({ email: state.email, termsRequired: state.termsRequired });
+      }
       if (a.kind === "redirect") return { ...state, step: "paying", error: null };
       if (a.kind === "already-owned") return { ...state, step: "owned", error: null, settled: a.settled === true };
       if (a.kind === "confirm-price") {
@@ -294,6 +351,8 @@ export function codeStepReducer(state: CodeStepState, action: CodeStepAction): C
     }
     case "failed": {
       if (state.step === "sending") return { ...state, step: "email", error: codeStepError(action.refusal, "start") };
+      // A resume that could not be asked: back to the email step, quietly (a reload is not a mistake).
+      if (state.step === "resuming") return initialCodeStep({ email: state.email, termsRequired: state.termsRequired });
       if (state.step === "paying") return { ...state, step: "pay-failed", error: codeStepError(action.refusal, "pay") };
       const resending = state.step === "code" && state.resending;
       if (state.step !== "verifying" && !resending) return state;
@@ -319,6 +378,9 @@ export function codeStepReducer(state: CodeStepState, action: CodeStepAction): C
     case "changeEmail":
       if (state.step !== "code" && state.step !== "email" && state.step !== "pay-failed" && state.step !== "confirm-price") return state;
       return initialCodeStep({ email: state.email, termsRequired: state.termsRequired });
+    case "resume":
+      if (state.step !== "email") return state;
+      return { ...state, step: "resuming", email: action.email, error: null };
     case "restore": {
       if (state.step !== "email") return state;
       const p = action.pending;

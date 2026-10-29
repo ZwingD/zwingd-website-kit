@@ -3,7 +3,7 @@
  * The code step before payment (checkout v3.2, spec §8, §8a, A2) as a
  * headless hook: the page draws the step its own way, the kit runs it.
  *
- *   const step = useCodeStep({ offer, expectedTotalMinor, expectedCurrencyCode, country, storageKey, terms });
+ *   const step = useCodeStep({ offer, expectedTotalMinor, expectedCurrencyCode, country, workspaceName, storageKey, terms });
  *   <input {...step.emailInputProps} value={email} onChange={...} />
  *   step.sendCode(email)                 // email → sending → code (focus moves to the code input)
  *   <input {...step.codeInputProps} />   // one input: paste "123 456" works; Tab leaves it
@@ -19,7 +19,9 @@
  * goes to payment, as for member checkout.
  *
  * The form value (`csrf`) comes from GET /session/code-step unless given, and
- * the same read resumes an open step after a reload (the ticket cookie).
+ * the same read resumes an open step after a reload (the ticket cookie), or,
+ * once the code was right and the proof is still held for this offer, the
+ * step at "Pay {amount}" (`resuming` → `confirm-price`, Helm #18 on #1963).
  */
 import { useCallback, useEffect, useId, useReducer, useRef, useState, type ChangeEvent, type RefObject } from "react";
 
@@ -44,6 +46,7 @@ import {
   type CodeStepRefusal,
   type CodeStepState,
   type CodeStepTicket,
+  type HeldCodeStep,
 } from "@zwingd-ce/website-kit";
 
 export interface UseCodeStepOptions {
@@ -61,13 +64,20 @@ export interface UseCodeStepOptions {
   /**
    * The country the page priced `expectedTotalMinor` in, as a master-data
    * country id (24 hex, the `_id` your guest quote and start take as
-   * `country`), e.g. the one the buyer picked in your pop-up. The re-quote
-   * after the code uses it, so a non-member sees the same total. Without it
-   * the kit's `visitorCountry` setting (the geo header) is used. One of the two
-   * is needed: with neither, the API refuses the start of a buyer who
-   * is not an active member (`HOSTED_GUEST_INVALID`) after the code is spent.
+   * `country`), e.g. the one the buyer picked in your pop-up. It goes with the
+   * code start and the re-quote after the code as the API's FALLBACK country:
+   * a verified member is priced in their profile country first (A2, Helm #23),
+   * a non-member sees the same total. Without it the kit's `visitorCountry`
+   * setting (the geo header) is used. With neither, no code is sent: the start
+   * is refused `COUNTRY_REQUIRED` (field `country`) for every email alike
+   * (Helm #4), so ask for the country and send the code again.
    */
   country?: string | null;
+  /**
+   * The workspace's name as the buyer knows it: "We couldn't take this payment. Try again, or contact
+   * {workspace}." (Helm #16).
+   */
+  workspaceName: string;
   attribution?: CheckoutAttribution;
   /** The site's sessionStorage key for an order, exactly as its return page reads it. */
   storageKey: (orderId: string) => string;
@@ -83,7 +93,7 @@ export interface UseCodeStepOptions {
   basePath?: string;
   /** The `csrf` value, when the page already has it; else read from GET /session/code-step. */
   formToken?: string | null;
-  /** Resume an open step after a reload. Default true. */
+  /** Resume an open step (or a held proof, at "Pay {amount}") after a reload. Default true. */
   resume?: boolean;
   /** The email to start with (e.g. what the buyer typed before). */
   initialEmail?: string;
@@ -181,6 +191,10 @@ type Answer<T> = { ok: true; body: T } | { ok: false; refusal: CodeStepRefusal; 
 
 const unavailable = (): { ok: false; refusal: CodeStepRefusal } => ({ ok: false, refusal: { reason: UNAVAILABLE_REASON } });
 
+/** The purchase shapes the kit's server takes: a held proof waits until the page has them. */
+const EXPECTED_TOTAL = /^\d{1,18}$/;
+const CURRENCY = /^[A-Z]{3}$/;
+
 /** The browser side of the kit's code routes. Never throws. */
 export function createCodeStepClient(options: { basePath?: string; fetch?: typeof fetch } = {}) {
   const base = (options.basePath ?? "/session").replace(/\/+$/, "");
@@ -215,7 +229,7 @@ export function createCodeStepClient(options: { basePath?: string; fetch?: typeo
         const body = (await res.json()) as CodeStepRead;
         if (typeof body?.formToken !== "string") return null;
         // An open step the hook cannot run on is not resumed: the form value still counts.
-        return { formToken: body.formToken, pending: isPending(body.pending) ? body.pending : null };
+        return { formToken: body.formToken, pending: isPending(body.pending) ? body.pending : null, held: isHeld(body.held) ? body.held : null };
       } catch {
         return null;
       }
@@ -224,6 +238,7 @@ export function createCodeStepClient(options: { basePath?: string; fetch?: typeo
     resend: async (form: Record<string, string>): Promise<Answer<CodeStepTicket>> => ticketOnly(await postForm<unknown>("code-resend", form)),
     verify: (form: Record<string, string>) => postForm<CodeStepPayment>("code-verify", form),
     pay: (form: Record<string, string>) => postForm<CodeStepPayment>("code-pay", form),
+    requote: (form: Record<string, string>) => postForm<CodeStepPayment>("code-requote", form),
   };
 }
 
@@ -249,6 +264,11 @@ function isPending(value: unknown): boolean {
   return !!v && typeof v === "object" && typeof v.email === "string" && Number.isInteger(v.codeLength) && isTime(v.codeExpiresAt) && isTime(v.resendAvailableAt);
 }
 
+function isHeld(value: unknown): value is HeldCodeStep {
+  const v = value as Record<string, unknown> | null;
+  return !!v && typeof v === "object" && typeof v.email === "string" && (v.offer === null || typeof v.offer === "string");
+}
+
 function isPayment(value: unknown): value is CodeStepPayment {
   const v = value as Record<string, unknown> | null;
   if (!v || typeof v !== "object") return false;
@@ -263,7 +283,12 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
   // Live, not only at mount: a site often loads the workspace's legal documents after the first render.
   const termsGiven = (options.terms?.length ?? 0) > 0;
   const [reduced, dispatch] = useReducer(codeStepReducer, { email: options.initialEmail ?? "", termsRequired: termsGiven }, initialCodeStep);
-  const state: CodeStepState = termsGiven && !reduced.termsRequired ? { ...reduced, termsRequired: true } : reduced;
+  const withTerms: CodeStepState = termsGiven && !reduced.termsRequired ? { ...reduced, termsRequired: true } : reduced;
+  // The one line with the workspace in it (#16): filled here, where the name is known.
+  const state: CodeStepState =
+    withTerms.error && withTerms.error.message.includes("{workspace}")
+      ? { ...withTerms, error: { ...withTerms.error, message: fillCopy(withTerms.error.message, { workspace: options.workspaceName }) } }
+      : withTerms;
   const [code, setCodeValue] = useState("");
   const [clock, setClock] = useState(() => now());
   const codeInputRef = useRef<HTMLInputElement | null>(null);
@@ -296,6 +321,9 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
     if (options.formToken) token.current = options.formToken;
   }, [options.formToken]);
 
+  // A held proof from the read, waiting for the page's purchase (a price may still be loading).
+  const [held, setHeld] = useState<HeldCodeStep | null>(null);
+
   // Resume an open step after a reload (and learn the form value).
   useEffect(() => {
     if (options.resume === false && token.current) return;
@@ -303,7 +331,9 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
     void client.read().then((read) => {
       if (!live || !read) return;
       token.current ??= read.formToken;
-      if (options.resume !== false && read.pending) dispatch({ type: "restore", pending: read.pending, now: now() });
+      if (options.resume === false) return;
+      if (read.pending) dispatch({ type: "restore", pending: read.pending, now: now() });
+      else if (read.held) setHeld(read.held);
     });
     return () => {
       live = false;
@@ -311,6 +341,20 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
     // Once on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Helm #18: a proof held for THIS offer resumes at "Pay {amount}", once the page knows the price it shows.
+  const purchaseReady = EXPECTED_TOTAL.test(options.expectedTotalMinor) && CURRENCY.test(options.expectedCurrencyCode);
+  useEffect(() => {
+    if (!held || !purchaseReady || (held.offer !== null && held.offer !== options.offer)) return;
+    setHeld(null);
+    void once(async () => {
+      if (stateRef.current.step !== "email") return;
+      dispatch({ type: "resume", email: held.email });
+      const o = optionsRef.current;
+      settle(await withFormToken((csrf) => client.requote({ csrf, ...purchaseForm(o.expectedTotalMinor, o.expectedCurrencyCode) })));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [held, purchaseReady, options.offer]);
 
   // The countdown ticks once a second while it runs (the visible label only).
   const waiting = state.step === "code" && state.resendAvailableAt !== null && state.resendAvailableAt > clock;
@@ -411,11 +455,14 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
       once(async () => {
         if (stateRef.current.step !== "email") return;
         dispatch({ type: "send", email });
+        const o = optionsRef.current;
         const res = await withFormToken((csrf) =>
           client.start({
             csrf,
             email: email.trim(),
-            offer: optionsRef.current.offer,
+            offer: o.offer,
+            // Helm #4: the country goes with the start; with none known the kit's server sends no code.
+            ...(o.country ? { country: o.country } : {}),
             ...(extras.botToken ? { botToken: extras.botToken } : {}),
           }),
         );
@@ -434,7 +481,8 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
         let res = await withFormToken((csrf) => client.resend({ csrf }));
         // §8: the ticket is gone altogether (cookie lost) → start again with the email the step holds.
         if (!res.ok && res.refusal.reason === "WEBSITE_CODE_EXPIRED" && s.email) {
-          res = await withFormToken((csrf) => client.start({ csrf, email: s.email, offer: optionsRef.current.offer }));
+          const o = optionsRef.current;
+          res = await withFormToken((csrf) => client.start({ csrf, email: s.email, offer: o.offer, ...(o.country ? { country: o.country } : {}) }));
         }
         dispatch(res.ok ? { type: "sent", ticket: res.body, now: now() } : { type: "failed", refusal: res.refusal, now: now() });
       }),
@@ -508,7 +556,7 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
     resendLabel: countdown.label,
     canResend: countdown.canResend,
     announcement: codeStepAnnouncement(state, clock),
-    busy: state.step === "sending" || state.step === "verifying" || state.step === "paying" || state.resending,
+    busy: state.step === "sending" || state.step === "verifying" || state.step === "resuming" || state.step === "paying" || state.resending,
     amount,
     priceLine: amount === null ? null : fillCopy(CODE_STEP_COPY.memberPrice, { amount }),
     payLabel: amount === null ? null : fillCopy(CODE_STEP_COPY.payButton, { amount }),

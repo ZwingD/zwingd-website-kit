@@ -69,6 +69,7 @@ export type {
   CodeStepRefusal,
   CodeStepState,
   CodeStepTicket,
+  HeldCodeStep,
   KitReason,
   PendingCodeStep,
 } from "./code-step.ts";

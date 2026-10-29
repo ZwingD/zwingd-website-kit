@@ -156,15 +156,21 @@ export interface WebsiteKit extends MemberReader {
   codeVerify(req: RequestView): Promise<ResponseView>;
   /** v0.2.0 `POST /session/code-pay` (same-site POST + CSRF): "Pay {amount}" with the held proof. */
   codePay(req: RequestView): Promise<ResponseView>;
-  /** v0.2.0 `POST /session/checkout-continue` (same-site POST + CSRF): the thank-you press; mints the nonce and answers `{ nonce, continueUrl }`. */
+  /** v0.2.0 `POST /session/code-requote` (same-site POST + CSRF): a reload with the proof held, re-quoted for "Pay {amount}". */
+  codeRequote(req: RequestView): Promise<ResponseView>;
+  /**
+   * v0.2.0 `POST /session/checkout-continue` (same-site POST + CSRF): the thank-you press with `orderId`; mints the
+   * nonce and answers `{ nonce, continueUrl }`.
+   */
   checkoutContinue(req: RequestView): Promise<ResponseView>;
   /**
    * v0.2.0, server only: the thank-you button ("Continue sign-up" / "Go to my
-   * course") from a server-side read of the proof context, or null when this
-   * browser holds no proof that is still good, or the context read fails
-   * (an API fault). Never mints a nonce.
+   * course") for the order on the page, from a server-side read of the proof
+   * context, or null when this browser holds no proof that is still good, the
+   * held proof did not start `orderId` in this browser (Helm #26, a kit-only
+   * check), or the context read fails (an API fault). Never mints a nonce.
    */
-  checkoutContinueFor(cookies: Record<string, string>): Promise<CheckoutContinue | null>;
+  checkoutContinueFor(cookies: Record<string, string>, input: { orderId: string }): Promise<CheckoutContinue | null>;
   /** Route a request to any /session/* route above; null when the path is none of them. */
   handle(req: RequestView): Promise<ResponseView | null>;
   /**
@@ -354,6 +360,7 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
     codeResend: code.codeResend,
     codeVerify: code.codeVerify,
     codePay: code.codePay,
+    codeRequote: code.codeRequote,
     checkoutContinue: code.checkoutContinue,
     checkoutContinueFor: code.checkoutContinueFor,
     async handle(req) {
@@ -367,6 +374,7 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
       if (path === SESSION_PATHS.codeResend) return code.codeResend(req);
       if (path === SESSION_PATHS.codeVerify) return code.codeVerify(req);
       if (path === SESSION_PATHS.codePay) return code.codePay(req);
+      if (path === SESSION_PATHS.codeRequote) return code.codeRequote(req);
       if (path === SESSION_PATHS.checkoutContinue) return code.checkoutContinue(req);
       return null;
     },

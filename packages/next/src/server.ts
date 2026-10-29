@@ -6,7 +6,7 @@
  *   const member = await getMember(kit);          // { firstName?, lastName? } or null
  *   const signOut = await signOutToken(kit);      // the sign-out form's csrf value
  *   const account = await accountUrl(kit);        // where "Go to my account" opens
- *   const next = await getCheckoutContinue(kit);  // v0.2.0 thank-you button, or null
+ *   const next = await getCheckoutContinue(kit, { orderId });  // v0.2.0 thank-you button for this order, or null
  */
 import { cookies } from "next/headers";
 
@@ -90,13 +90,17 @@ export async function accountUrl(kit: WebsiteKit): Promise<string> {
 }
 
 /**
- * v0.2.0, the thank-you page (checkout v3.2 §8 step 4): which button to show,
- * from a SERVER-side read of the proof context (`checkout-proof/context`):
- * `{ label: "Continue sign-up" | "Go to my course", action, continueAs, signInUrl }`,
- * or null when this browser holds no proof that is still good, or the context
- * read fails (an API fault): show your usual link to the course instead. Pass it to `<CheckoutContinueButton next={...} />`.
- * It never mints the continue nonce: only the press does (A3).
+ * v0.2.0, the thank-you page (checkout v3.2 §8 step 4): which button to show
+ * for THIS order, from a SERVER-side read of the proof context
+ * (`checkout-proof/context`): `{ orderId, label: "Continue sign-up" | "Go to my course", action, continueAs, signInUrl }`,
+ * or null when this browser holds no proof that is still good, the held proof
+ * did not start this order in this browser (Helm #26 on #1963, a kit-only
+ * check: the API's context names no order), `orderId` is not an order id, or
+ * the context read fails (an API fault): show your usual link to the course
+ * instead. Pass it to `<CheckoutContinueButton next={...} />`. It never mints
+ * the continue nonce: only the press does (A3). ⛔ Keep `continueAs` out of
+ * browser storage, addresses and logs (Helm #19).
  */
-export async function getCheckoutContinue(kit: WebsiteKit): Promise<CheckoutContinue | null> {
-  return kit.checkoutContinueFor(await cookieMap());
+export async function getCheckoutContinue(kit: WebsiteKit, input: { orderId: string }): Promise<CheckoutContinue | null> {
+  return kit.checkoutContinueFor(await cookieMap(), input);
 }

@@ -8,7 +8,7 @@
  *     "Send a new code" is ready (never every second), and "Taking you to
  *     payment…" while going to payment. Visually hidden unless `visible`.
  *
- *   <CheckoutContinueButton next={await getCheckoutContinue(kit)} />
+ *   <CheckoutContinueButton next={await getCheckoutContinue(kit, { orderId })} storageKey={(id) => `checkout:${id}`} />
  *     The thank-you button (§8 step 4, A3): "Continue sign-up" or "Go to my
  *     course", picked on the server. ONE press: it POSTs (same-site, with the
  *     form value) to the kit's /session/checkout-continue, which mints the 60 s
@@ -22,7 +22,7 @@
  */
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 
-import { APP_CONTINUE_PATH, type CheckoutContinue } from "@zwingd-ce/website-kit";
+import { APP_CONTINUE_PATH, readCheckoutOrder, type CheckoutContinue } from "@zwingd-ce/website-kit";
 
 import { createCodeStepClient, type CodeStep } from "./use-code-step.ts";
 
@@ -54,8 +54,16 @@ export function CodeStepLiveRegion({ step, className, visible = false }: CodeSte
 }
 
 export interface CheckoutContinueButtonProps {
-  /** From `getCheckoutContinue(kit)` on the server. Null: nothing is drawn. */
+  /** From `getCheckoutContinue(kit, { orderId })` on the server. Null: nothing is drawn. */
   next: CheckoutContinue | null;
+  /**
+   * The site's sessionStorage key for an order, as `useCodeStep` stored it (Helm #26): the button is drawn only
+   * when THIS tab holds the verified-checkout record of `next.orderId` (`readCheckoutOrder`, `member: false`), so a
+   * thank-you page opened elsewhere, or for another order, shows no button.
+   */
+  storageKey: (orderId: string) => string;
+  /** For tests: the tab's storage. Default sessionStorage. */
+  storage?: { getItem(key: string): string | null } | null;
   className?: string;
   /** Where the kit's routes are mounted. Default `/session`. */
   basePath?: string;
@@ -81,8 +89,19 @@ function continueUrlOk(value: unknown): value is string {
   }
 }
 
-export function CheckoutContinueButton({ next, className, basePath, formToken, fetch: fetchImpl, submit, navigate }: CheckoutContinueButtonProps) {
+export function CheckoutContinueButton({ next, storageKey, storage, className, basePath, formToken, fetch: fetchImpl, submit, navigate }: CheckoutContinueButtonProps) {
   const [csrf, setCsrf] = useState<string | null>(formToken ?? null);
+  // Helm #26: this tab's own record of the order. Read after mount (storage is not there on the server), so the
+  // first render draws nothing and the page never flashes a button it then takes away.
+  const [ownOrder, setOwnOrder] = useState(false);
+  const orderId = next?.orderId ?? null;
+  useEffect(() => {
+    if (!orderId) return setOwnOrder(false);
+    const stored = readCheckoutOrder(orderId, { storageKey, ...(storage === undefined ? {} : { storage }) });
+    setOwnOrder(stored !== null && stored.member === false);
+    // `storageKey` is the site's pure key function; a new identity each render must not re-read storage.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderId, storage]);
   const [busy, setBusy] = useState(false);
   // The one-press guard: `busy` is a render's copy, so a second click before the re-render would mint a second nonce.
   const pressing = useRef(false);
@@ -112,10 +131,11 @@ export function CheckoutContinueButton({ next, className, basePath, formToken, f
     return () => target?.removeEventListener("pageshow", again);
   }, []);
 
-  if (!next) return null;
+  if (!next || !ownOrder) return null;
   const base = (basePath ?? "/session").replace(/\/+$/, "");
   const endpoint = basePath ? `${base}${next.action.slice("/session".length)}` : next.action;
   const signInUrl = next.signInUrl;
+  const pressOrderId = next.orderId;
 
   async function press() {
     if (pressing.current) return;
@@ -135,7 +155,8 @@ export function CheckoutContinueButton({ next, className, basePath, formToken, f
           method: "POST",
           credentials: "same-origin",
           headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-          body: new URLSearchParams({ csrf: token }).toString(),
+          // The order on this page: the API mints only for the proof that order was bought with (Helm #26).
+          body: new URLSearchParams({ csrf: token, orderId: pressOrderId }).toString(),
         });
         return { status: res.status, body: res.ok ? ((await res.json()) as { nonce?: unknown; continueUrl?: unknown }) : null };
       } catch {

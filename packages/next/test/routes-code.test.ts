@@ -21,6 +21,7 @@ const NONCE = "n".repeat(43);
 const OFFER = "6520f1c2a3b4c5d6e7f80a01";
 const TICKET = { ticketId: "tk_1", codeLength: 6, codeExpiresInSeconds: 600, resendAvailableAt: "2026-10-28T10:01:00.000Z" };
 const QUOTE = { offer: OFFER, currencyCode: "USD", minorUnitExponent: 2, totalMinor: "9900", subTotalMinor: "9900", discountTotalMinor: "0", taxTotalMinor: "0", pricesIncludeTax: false, alreadyEnrolled: false, gateways: [] };
+const COUNTRY = "6520f1c2a3b4c5d6e7f80a03";
 const STARTED = { orderId: "6520f1c2a3b4c5d6e7f80a04", paymentState: "PENDING", redirectUrl: "https://checkout.stripe.com/x", resumed: false, orderToken: "ot", orderTokenExpiresAt: null };
 
 function setup() {
@@ -52,7 +53,7 @@ const form = (path: string, body: string, cookie: string, headers: Record<string
 
 test("POST /session/code-start then /session/code-verify: proof cookie only (no session), straight to payment", async () => {
   const { routes, calls } = setup();
-  const started = await routes.POST(form("/session/code-start", `csrf=${CSRF}&email=buyer%40example.org&offer=${OFFER}`, `__Host-zw_csrf=${CSRF}`));
+  const started = await routes.POST(form("/session/code-start", `csrf=${CSRF}&email=buyer%40example.org&offer=${OFFER}&country=${COUNTRY}`, `__Host-zw_csrf=${CSRF}`));
   assert.equal(started.status, 200);
   const ticket = started.headers.getSetCookie().find((c) => c.startsWith("__Host-zw_ticket="))!.split(";")[0]!;
 
@@ -75,13 +76,31 @@ test("a cross-site code POST is 403 and never reaches the API", async () => {
   assert.equal(calls.length, 0);
 });
 
-test("POST /session/checkout-continue answers { nonce, continueUrl } as JSON; GET is 405", async () => {
+/** Start and verify through the routes: the browser's cookies afterwards (the proof, and the held marker naming the order). */
+async function paidCookies(routes: ReturnType<typeof setup>["routes"]): Promise<string> {
+  const started = await routes.POST(form("/session/code-start", `csrf=${CSRF}&email=buyer%40example.org&offer=${OFFER}&country=${COUNTRY}`, `__Host-zw_csrf=${CSRF}`));
+  const ticket = started.headers.getSetCookie().find((c) => c.startsWith("__Host-zw_ticket="))!.split(";")[0]!;
+  const verified = await routes.POST(form("/session/code-verify", `csrf=${CSRF}&code=123456&offer=${OFFER}&expectedTotalMinor=9900&expectedCurrencyCode=USD`, `__Host-zw_csrf=${CSRF}; ${ticket}`));
+  const set = verified.headers.getSetCookie().map((c) => c.split(";")[0]!);
+  return [`__Host-zw_csrf=${CSRF}`, ...set].join("; ");
+}
+
+test("POST /session/checkout-continue answers { nonce, continueUrl } as JSON for the order this browser's proof started; GET is 405", async () => {
   const { routes, calls } = setup();
-  const res = await routes.POST(form("/session/checkout-continue", `csrf=${CSRF}`, `__Host-zw_csrf=${CSRF}; __Host-zw_proof=${PROOF}`, { origin: ORIGIN, accept: "application/json" }));
+  const cookie = await paidCookies(routes);
+  const before = calls.length;
+  const res = await routes.POST(form("/session/checkout-continue", `csrf=${CSRF}&orderId=${STARTED.orderId}`, cookie, { origin: ORIGIN, accept: "application/json" }));
   assert.equal(res.status, 200);
   assert.match(res.headers.get("content-type")!, /^application\/json/);
   assert.deepEqual(await res.json(), { nonce: NONCE, continueUrl: `${APP}/session/checkout-continue` });
-  assert.deepEqual(calls, ["checkout-proof/continue"]);
+  assert.deepEqual(calls.slice(before), ["checkout-proof/continue"]);
+  // Helm #26 (kit only): another order, on the same proof, is the normal sign-in, and nothing is minted.
+  const other = await routes.POST(form("/session/checkout-continue", `csrf=${CSRF}&orderId=${"a".repeat(24)}`, cookie, { origin: ORIGIN, accept: "application/json" }));
+  assert.equal(other.status, 400);
+  assert.equal(calls.slice(before).length, 1);
+  // The server-side read gives the button for this order alone.
+  const cookies = Object.fromEntries(cookie.split("; ").map((c) => [c.slice(0, c.indexOf("=")), c.slice(c.indexOf("=") + 1)]));
+  assert.equal((await setup().kit.checkoutContinueFor(cookies, { orderId: "a".repeat(24) })), null);
   assert.equal((await routes.GET(new Request(`${ORIGIN}/session/checkout-continue`))).status, 405);
 });
 
@@ -109,7 +128,14 @@ after(async () => {
   await window.happyDOM.close();
 });
 
-const NEXT = { continueAs: "sign-up" as const, label: "Continue sign-up", action: "/session/checkout-continue", signInUrl: `${APP}/` };
+const ORDER_ID = "6520f1c2a3b4c5d6e7f80a04";
+const NEXT = { orderId: ORDER_ID, continueAs: "sign-up" as const, label: "Continue sign-up", action: "/session/checkout-continue", signInUrl: `${APP}/` };
+const STORAGE_KEY = (id: string) => `example:checkout:order:${id}`;
+/** This tab's verified-checkout record of ORDER_ID, as useCodeStep keeps it (Helm #26). */
+const OWN_ORDER = (member = false) => {
+  const items = new Map([[STORAGE_KEY(ORDER_ID), JSON.stringify({ orderId: ORDER_ID, token: "ot_1", email: "", member, coursePath: null, expiresAt: null })]]);
+  return { getItem: (k: string) => items.get(k) ?? null };
+};
 
 async function renderButton(answer: { status: number; body: unknown } | "network" | { status: number; body: unknown }[], formTokens: (string | null)[] = [CSRF]) {
   const React = await import("react");
@@ -138,6 +164,8 @@ async function renderButton(answer: { status: number; body: unknown } | "network
     root.render(
       React.createElement(CheckoutContinueButton, {
         next: NEXT,
+        storageKey: STORAGE_KEY,
+        storage: OWN_ORDER(),
         fetch: fetchImpl,
         navigate: (url: string) => void navigated.push(url),
         submit: (f: HTMLFormElement) => {
@@ -175,7 +203,8 @@ test("CheckoutContinueButton: ONE press fetches the nonce, then form-POSTs it to
   assert.equal(call.url, "/session/checkout-continue");
   assert.equal(call.init?.method, "POST");
   assert.equal(new Headers(call.init?.headers).get("accept"), "application/json");
-  assert.equal(String(call.init?.body), `csrf=${CSRF}`);
+  // The press names the order on the page (Helm #26).
+  assert.equal(String(call.init?.body), `csrf=${CSRF}&orderId=${ORDER_ID}`);
   assert.deepEqual(b.submitted, [{ action: `${APP}/session/checkout-continue`, method: "post", fields: { nonce: NONCE } }]);
   assert.deepEqual(b.navigated, []);
   // Nowhere else: not in the page, storage or an address.
@@ -223,7 +252,7 @@ test("CheckoutContinueButton: a stale form value (403) is read again and the pre
   );
   await b.press();
   const asks = b.fetched.filter((f) => f.url === "/session/checkout-continue");
-  assert.deepEqual(asks.map((f) => String(f.init?.body)), [`csrf=${CSRF}`, `csrf=${FRESH}`]);
+  assert.deepEqual(asks.map((f) => String(f.init?.body)), [`csrf=${CSRF}&orderId=${ORDER_ID}`, `csrf=${FRESH}&orderId=${ORDER_ID}`]);
   assert.equal(b.submitted.length, 1);
   assert.deepEqual(b.navigated, []);
   await b.unmount();
@@ -269,11 +298,62 @@ test("CheckoutContinueButton: null draws nothing", async () => {
   window.document.body.appendChild(container);
   const root = createRoot(container);
   await React.act(async () => {
-    root.render(React.createElement(CheckoutContinueButton, { next: null }));
+    root.render(React.createElement(CheckoutContinueButton, { next: null, storageKey: STORAGE_KEY }));
   });
   assert.equal(container.innerHTML, "");
   await React.act(async () => root.unmount());
   container.remove();
+});
+
+test("Helm #26: the button is drawn only when THIS tab holds the verified-checkout record of next.orderId", async () => {
+  const React = await import("react");
+  const REACT_DOM_CLIENT = "react-dom/client";
+  const { createRoot } = (await import(REACT_DOM_CLIENT)) as { createRoot(el: unknown): { render(n: unknown): void; unmount(): void } };
+  const { CheckoutContinueButton } = await import("../src/code-step-parts.tsx");
+  const draw = async (storage: { getItem(k: string): string | null } | null) => {
+    const container = window.document.createElement("div");
+    window.document.body.appendChild(container);
+    const root = createRoot(container);
+    await React.act(async () => {
+      root.render(React.createElement(CheckoutContinueButton, { next: NEXT, storageKey: STORAGE_KEY, storage, formToken: CSRF }));
+    });
+    const html = container.innerHTML;
+    await React.act(async () => root.unmount());
+    container.remove();
+    return html;
+  };
+  assert.match(await draw(OWN_ORDER()), /Continue sign-up/);
+  // No record (another tab, a link opened elsewhere), no storage, or a member's own order: nothing.
+  assert.equal(await draw({ getItem: () => null }), "");
+  assert.equal(await draw(null), "");
+  assert.equal(await draw(OWN_ORDER(true)), "");
+});
+
+test("Helm #19: the button never writes continueAs (or anything) to browser storage, and logs nothing", async () => {
+  const writes: string[] = [];
+  const logged: unknown[] = [];
+  const original = { log: console.log, warn: console.warn, error: console.error, info: console.info };
+  for (const k of ["log", "warn", "error", "info"] as const) console[k] = (...a: unknown[]) => void logged.push(a);
+  const sessionStorage = window.sessionStorage;
+  const localStorage = window.localStorage;
+  const spy = (store: Storage) => {
+    const set = store.setItem.bind(store);
+    store.setItem = (k: string, v: string) => {
+      writes.push(`${k}=${v}`);
+      set(k, v);
+    };
+  };
+  spy(sessionStorage);
+  spy(localStorage);
+  try {
+    const b = await renderButton({ status: 200, body: { nonce: NONCE, continueUrl: `${APP}/session/checkout-continue` } });
+    await b.press();
+    assert.deepEqual(writes, []);
+    assert.ok(!JSON.stringify(logged).includes("sign-up"));
+    await b.unmount();
+  } finally {
+    Object.assign(console, original);
+  }
 });
 
 test("AC 17: the v3.1 exports are gone from the package entry points (isNewAccountBuyer, appLinkHref, appSignInFromEnv)", async () => {

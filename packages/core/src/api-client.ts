@@ -188,6 +188,12 @@ export interface MemberQuoteInput {
 export interface MemberStartInput extends MemberQuoteInput {
   paymentGateway?: string;
   expectedTotalMinor: string;
+  /**
+   * The currency of `expectedTotalMinor` (ISO 4217, Helm #14 on #1963): a start whose charged currency differs is
+   * refused PRICE_CHANGED, as a changed total is (A2). An API older than that ignores the key (the gateway picks
+   * the fields it knows), so the total alone is compared, as before.
+   */
+  expectedCurrencyCode?: string;
   returnUrl: string;
   attribution?: Record<string, string>;
 }
@@ -428,7 +434,10 @@ export async function codeVerify(config: WebsiteKitConfig, input: CodeVerifyInpu
 /** Which thank-you button: a new buyer (or a pending learner) finishes sign-up; a member goes to the course. */
 export type ContinueAs = "sign-up" | "member";
 
-/** Contract `checkout-proof/context`: server-side only; does not use the proof up. Never throws. */
+/**
+ * Contract `checkout-proof/context`: server-side only; does not use the proof up. Never throws. It names no order:
+ * which order the button belongs to is the kit's own check (Helm #26 on #1963, option a).
+ */
 export async function proofContext(
   config: WebsiteKitConfig,
   input: { proof: string },

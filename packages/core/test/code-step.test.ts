@@ -43,6 +43,14 @@ test("CODE_STEP_COPY is the §8a copy, word for word", () => {
     goingToPayment: "Taking you to payment…",
     memberPrice: "Your member price is {amount}.",
     payButton: "Pay {amount}",
+    payStartFailed: "We couldn't start your payment. Try again.",
+    payFailed: "We couldn't take this payment. Try again, or contact {workspace}.",
+    proofExpired: "Your email check has expired. Enter your email again to get a new code.",
+    proofMismatch: "This isn't the email you checked. Enter your email again.",
+    proofUnavailable: "We couldn't continue just now. Try again in a moment.",
+    codesUnavailable: "Email codes aren't available here right now. Try again later.",
+    botCheck: "We couldn't confirm you're a person. Try again.",
+    chooseCountry: "Choose your country to continue.",
     continueSignUp: "Continue sign-up",
     goToCourse: "Go to my course",
   });
@@ -113,8 +121,25 @@ test("a failed send goes back to the email step with the reason, tied to the ema
   const s = codeStepReducer(sending, { type: "failed", refusal: { reason: "BOT_CHECK_FAILED" }, now: NOW });
   assert.equal(s.step, "email");
   assert.equal(s.error?.reason, "BOT_CHECK_FAILED");
-  assert.equal(s.error?.message, CODE_STEP_COPY.otherError);
+  // Helm #5: the bot-check line, signed.
+  assert.equal(s.error?.message, "We couldn't confirm you're a person. Try again.");
   assert.equal(s.error?.field, "email");
+});
+
+test("Helm #4: no country, no code: COUNTRY_REQUIRED goes back to the email step, tied to the country field", () => {
+  const sending = codeStepReducer(initialCodeStep(), { type: "send", email: "a@b.co" });
+  const s = codeStepReducer(sending, { type: "failed", refusal: { reason: "COUNTRY_REQUIRED" }, now: NOW });
+  assert.equal(s.step, "email");
+  assert.equal(s.error?.field, "country");
+  assert.equal(s.error?.message, CODE_STEP_COPY.chooseCountry);
+});
+
+test("Helm #5: the start's own refusals read their signed lines", () => {
+  const sending = () => codeStepReducer(initialCodeStep(), { type: "send", email: "a@b.co" });
+  const line = (reason: string) => codeStepReducer(sending(), { type: "failed", refusal: { reason }, now: NOW }).error?.message;
+  assert.equal(line("WEBSITE_CODE_DISABLED"), "Email codes aren't available here right now. Try again later.");
+  assert.equal(line("BOT_CHECK_UNAVAILABLE"), "We couldn't confirm you're a person. Try again.");
+  assert.equal(line("CHECKOUT_PROOF_UNAVAILABLE"), "We couldn't continue just now. Try again in a moment.");
 });
 
 test("terms required is recoverable: the step stays, the tick box shows and gets focus, ticking clears the error", () => {
@@ -148,10 +173,47 @@ test("a proof the API no longer accepts sends the buyer back to the email step w
   const s = codeStepReducer(paying, { type: "answered", answer: { kind: "payment-failed", reason: "CHECKOUT_PROOF_INVALID" } });
   assert.equal(s.step, "email");
   assert.equal(s.email, "buyer@example.org");
+  // Helm #5: say why the email step is back.
+  assert.equal(s.error?.message, "Your email check has expired. Enter your email again to get a new code.");
+  const mismatch = codeStepReducer(paying, { type: "answered", answer: { kind: "payment-failed", reason: "CHECKOUT_PROOF_EMAIL_MISMATCH" } });
+  assert.equal(mismatch.error?.message, "This isn't the email you checked. Enter your email again.");
   const other = codeStepReducer(paying, { type: "answered", answer: { kind: "payment-failed", reason: "UNAVAILABLE" } });
   assert.equal(other.step, "pay-failed");
-  assert.equal(other.error?.message, CODE_STEP_COPY.otherError);
+  assert.equal(other.error?.message, CODE_STEP_COPY.payStartFailed);
   assert.equal(codeStepReducer(other, { type: "pay" }).step, "paying");
+});
+
+test("Helm #16: after a right code, a payment that may start on a retry and one refused for good read differently", () => {
+  const verifying = codeStepReducer(onCode(), { type: "verify" });
+  const line = (reason: string) => codeStepReducer(verifying, { type: "answered", answer: { kind: "payment-failed", reason } }).error?.message;
+  for (const reason of ["UNAVAILABLE", "CHECKOUT_UNAVAILABLE"]) assert.equal(line(reason), "We couldn't start your payment. Try again.", reason);
+  // `{workspace}` is left for the page's hook to fill with the workspace's name.
+  for (const reason of ["HOSTED_GUEST_INVALID", "STORAGE_UNAVAILABLE", "SOMETHING_NEW"]) assert.equal(line(reason), "We couldn't take this payment. Try again, or contact {workspace}.", reason);
+  // A failed "Pay {amount}" press too.
+  const paying = codeStepReducer({ ...onCode(), step: "confirm-price" }, { type: "pay" });
+  assert.equal(codeStepReducer(paying, { type: "failed", refusal: { reason: "UNAVAILABLE" }, now: NOW }).error?.message, CODE_STEP_COPY.payStartFailed);
+});
+
+test("Helm #18: a held proof resumes at 'Pay {amount}' (resuming → confirm-price); a gone proof or no answer goes back to email, quietly", () => {
+  const resuming = codeStepReducer(initialCodeStep(), { type: "resume", email: "buyer@example.org" });
+  assert.equal(resuming.step, "resuming");
+  assert.equal(resuming.email, "buyer@example.org");
+  // Only from the email step.
+  assert.equal(codeStepReducer(onCode(), { type: "resume", email: "x@y.co" }).step, "code");
+  const priced = codeStepReducer(resuming, { type: "answered", answer: { kind: "confirm-price", totalMinor: "7900", currencyCode: "USD", minorUnitExponent: 2 } });
+  assert.equal(priced.step, "confirm-price");
+  assert.deepEqual(priced.price, { totalMinor: "7900", currencyCode: "USD", minorUnitExponent: 2 });
+  assert.equal(codeStepReducer(priced, { type: "pay" }).step, "paying");
+  for (const reason of ["CHECKOUT_PROOF_INVALID", "CHECKOUT_PROOF_EMAIL_MISMATCH", "EMAIL_VERIFICATION_REQUIRED"]) {
+    const gone = codeStepReducer(resuming, { type: "answered", answer: { kind: "payment-failed", reason } });
+    assert.equal(gone.step, "email", reason);
+    assert.equal(gone.error, null, reason);
+    assert.equal(gone.email, "buyer@example.org");
+  }
+  const noAnswer = codeStepReducer(resuming, { type: "failed", refusal: { reason: "UNAVAILABLE" }, now: NOW });
+  assert.equal(noAnswer.step, "email");
+  assert.equal(noAnswer.error, null);
+  assert.equal(codeStepReducer(resuming, { type: "answered", answer: { kind: "already-owned" } }).step, "owned");
 });
 
 test("countdown text: Send a new code in {s}s, then Send a new code", () => {

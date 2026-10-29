@@ -6,7 +6,11 @@
  *
  *   GET  /session/code-step          same-origin read: the form value (`csrf`)
  *                                    and the open step a reload resumes.
- *   POST /session/code-start         same-site POST + CSRF. `email`, `offer?`, `botToken?`.
+ *   POST /session/code-start         same-site POST + CSRF. `email`, `offer?`, `country?`, `botToken?`.
+ *                                    With no country (the page's, else the kit's
+ *                                    `visitorCountry`) it answers 400
+ *                                    COUNTRY_REQUIRED and sends NO code, for
+ *                                    every email alike (Helm #4 on #1963).
  *   POST /session/code-resend        same-site POST + CSRF. An expired ticket
  *                                    starts again with the stored email (§8).
  *   POST /session/code-verify        same-site POST + CSRF. `code`, `firstName?`,
@@ -24,12 +28,21 @@
  *                                    and currency: `checkout/start` at once;
  *                                    changed: `confirm-price` (A2).
  *   POST /session/code-pay           same-site POST + CSRF. "Pay {amount}": a
- *                                    start with the proof at the shown total.
+ *                                    start with the proof at the shown total and
+ *                                    currency (`expectedCurrencyCode`, Helm #14).
+ *   POST /session/code-requote       same-site POST + CSRF. A reload while the
+ *                                    proof is held (Helm #18): the purchase is
+ *                                    quoted again with it and always answered as
+ *                                    `confirm-price` ("Pay {amount}"), never a start.
  *   POST /session/checkout-continue  same-site POST + CSRF, the thank-you
  *                                    button's fetch. Mints the 60 s continue
  *                                    nonce NOW (never on a page load) and
  *                                    answers `{ nonce, continueUrl }`; the
  *                                    button POSTs it to the app in a form (A3).
+ *                                    `orderId` names the order on screen: the
+ *                                    kit mints only when the held proof started
+ *                                    that order in this browser (Helm #26, a
+ *                                    kit-only check; the API names no order).
  *
  * ⛔ The proof never reaches page JavaScript or an address: only the server
  * reads the cookie, and no answer carries it. The nonce goes only to the
@@ -56,7 +69,7 @@ import {
   type MemberStartInput,
 } from "./api-client.ts";
 import { CHECKOUT_ATTRIBUTION_KEYS, CHECKOUT_RETURN_PATH } from "./checkout.ts";
-import type { CodeStepPayment, CodeStepRefusal, CodeStepTicket, PendingCodeStep } from "./code-step.ts";
+import type { CodeStepPayment, CodeStepRefusal, CodeStepTicket, HeldCodeStep, PendingCodeStep } from "./code-step.ts";
 import { CODE_STEP_COPY, PROOF_GONE_REASONS, UNAVAILABLE_REASON } from "./code-step.ts";
 import { ipOf, type WebsiteKitConfig } from "./config.ts";
 import { clearCookie, serializeCookie, TICKET_COOKIE_MAX_AGE_S, type CookieNames } from "./cookies.ts";
@@ -70,6 +83,7 @@ export const CODE_PATHS = Object.freeze({
   codeResend: "/session/code-resend",
   codeVerify: "/session/code-verify",
   codePay: "/session/code-pay",
+  codeRequote: "/session/code-requote",
   checkoutContinue: "/session/checkout-continue",
 });
 
@@ -79,10 +93,18 @@ export interface CodeStepRead {
   formToken: string;
   /** The open step from the ticket cookie, or null. */
   pending: PendingCodeStep | null;
+  /** A proof the server still holds (a reload after the code): resume at "Pay {amount}" for this offer. Else null. */
+  held: HeldCodeStep | null;
 }
 
 /** The thank-you button the server picked from the proof context (§8 step 4). Never the proof itself. */
 export interface CheckoutContinue {
+  /** The order this button continues from (the one on the thank-you page, started by this browser's proof); the press sends it (Helm #26). */
+  orderId: string;
+  /**
+   * Which button. The buyer's own fact on their own page (Helm #19 waived §8 step 4 for it): ⛔ never put it in
+   * browser storage, an address or a log.
+   */
   continueAs: ContinueAs;
   /** "Continue sign-up" or "Go to my course" (§8a). */
   label: string;
@@ -122,9 +144,15 @@ interface TicketCookie {
   t: string;
   e: string;
   o?: string;
+  /** The country the code was asked in (a master-data id), so "Send a new code" after expiry can start again (#4). */
+  c?: string;
   l: number;
   x: number;
   r: string;
+  /** 1 once the code was right: the cookie then only remembers the email and offer of the held proof (`x` = its end). */
+  v?: 1;
+  /** The order the held proof last started (a master-data id): the thank-you button belongs to it alone (Helm #26). */
+  d?: string;
 }
 
 const baseHeaders = (): Record<string, string> => ({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
@@ -150,7 +178,17 @@ function decodeTicket(raw: string | undefined): TicketCookie | null {
     if (typeof v.t !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(v.t)) return null;
     if (typeof v.e !== "string" || !EMAIL.test(v.e)) return null;
     if (typeof v.l !== "number" || typeof v.x !== "number" || typeof v.r !== "string" || Number.isNaN(Date.parse(v.r))) return null;
-    return { t: v.t, e: v.e, l: v.l, x: v.x, r: v.r, ...(typeof v.o === "string" && OBJECT_ID.test(v.o) ? { o: v.o } : {}) };
+    return {
+      t: v.t,
+      e: v.e,
+      l: v.l,
+      x: v.x,
+      r: v.r,
+      ...(typeof v.o === "string" && OBJECT_ID.test(v.o) ? { o: v.o } : {}),
+      ...(typeof v.c === "string" && OBJECT_ID.test(v.c) ? { c: v.c } : {}),
+      ...(v.v === 1 ? { v: 1 as const } : {}),
+      ...(typeof v.d === "string" && OBJECT_ID.test(v.d) ? { d: v.d } : {}),
+    };
   } catch {
     return null;
   }
@@ -225,9 +263,13 @@ export interface CodeRoutes {
   codeResend(req: RequestView): Promise<ResponseView>;
   codeVerify(req: RequestView): Promise<ResponseView>;
   codePay(req: RequestView): Promise<ResponseView>;
+  codeRequote(req: RequestView): Promise<ResponseView>;
   checkoutContinue(req: RequestView): Promise<ResponseView>;
-  /** Server only: the thank-you button from `checkout-proof/context`, or null (no proof, or not valid any more). */
-  checkoutContinueFor(cookies: Record<string, string>): Promise<CheckoutContinue | null>;
+  /**
+   * Server only: the thank-you button for THIS order from `checkout-proof/context`, or null (no proof, not valid
+   * any more, the held proof did not start this order in this browser, or a malformed order id).
+   */
+  checkoutContinueFor(cookies: Record<string, string>, input: { orderId: string }): Promise<CheckoutContinue | null>;
   /** The `Set-Cookie` values that drop the code step's cookies (sign-out). */
   clearCookies(): string[];
 }
@@ -264,6 +306,12 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     }
   }
 
+  /** Helm #26: the held proof started `orderId` in this browser (the held-proof cookie remembers it). */
+  function startedHere(cookies: Record<string, string>, orderId: string): boolean {
+    const t = decodeTicket(cookies[names.ticket]);
+    return t?.v === 1 && t.d === orderId && t.x > config.now();
+  }
+
   function proofOf(cookies: Record<string, string>): string | null {
     const value = cookies[names.proof];
     return typeof value === "string" && PROOF_PATTERN.test(value) ? value : null;
@@ -278,10 +326,29 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     await reportDropOff(config, { email, offer, stage: "code_sent" }, DROP_OFF_TIMEOUT_MS).catch(() => undefined);
   }
 
-  function ticketCookie(ticket: CodeTicket, email: string, offer: string | undefined): string {
+  function ticketCookie(ticket: CodeTicket, email: string, offer: string | undefined, country: string | undefined): string {
     const now = config.now();
-    const value: TicketCookie = { t: ticket.ticketId, e: email, l: ticket.codeLength, x: now + ticket.codeExpiresInSeconds * 1000, r: ticket.resendAvailableAt, ...(offer ? { o: offer } : {}) };
+    const value: TicketCookie = {
+      t: ticket.ticketId,
+      e: email,
+      l: ticket.codeLength,
+      x: now + ticket.codeExpiresInSeconds * 1000,
+      r: ticket.resendAvailableAt,
+      ...(offer ? { o: offer } : {}),
+      ...(country ? { c: country } : {}),
+    };
     return serializeCookie(names.ticket, encodeTicket(value), { sameSite: "Lax", maxAge: TICKET_COOKIE_MAX_AGE_S }, local);
+  }
+
+  /**
+   * Helm #26: the held proof started `orderId` (or settled it at once). Remembered in the held-proof cookie, for the
+   * rest of its life, so the thank-you page shows the button only for that order. Null when nothing is held.
+   */
+  function startedCookie(t: TicketCookie | null, orderId: string): string | null {
+    if (!t || t.v !== 1) return null;
+    const maxAgeS = Math.max(0, Math.floor((t.x - config.now()) / 1000));
+    if (maxAgeS === 0) return null;
+    return serializeCookie(names.ticket, encodeTicket({ ...t, d: orderId }), { sameSite: "Lax", maxAge: maxAgeS }, local);
   }
 
   const browserTicket = (t: CodeTicket): CodeStepTicket => ({ codeLength: t.codeLength, codeExpiresInSeconds: t.codeExpiresInSeconds, resendAvailableAt: t.resendAvailableAt });
@@ -294,8 +361,8 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
   interface Purchase {
     offer: string;
     expectedTotalMinor: string;
-    /** Required on verify (the A2 comparison); on pay, the API's start takes no currency, so it may be absent. */
-    expectedCurrencyCode: string | null;
+    /** The currency of the shown total: compared on verify (A2) and sent with every start (Helm #14). */
+    expectedCurrencyCode: string;
     couponCode?: string;
     paymentGateway?: string;
     country?: string;
@@ -308,12 +375,12 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
    * wrong shape: refused before the code is spent, never dropped (a dropped country or coupon re-quotes another
    * price and shows a false "member price").
    */
-  function purchaseOf(form: Record<string, string>, fallbackOffer: string | undefined, currency: "required" | "optional"): Purchase | null {
+  function purchaseOf(form: Record<string, string>, fallbackOffer: string | undefined): Purchase | null {
     const offer = typeof form.offer === "string" && OBJECT_ID.test(form.offer) ? form.offer : fallbackOffer;
     const expectedTotalMinor = typeof form.expectedTotalMinor === "string" && EXPECTED_TOTAL.test(form.expectedTotalMinor) ? form.expectedTotalMinor : null;
     // The currency of the shown total: a re-quote with the same number in another currency is not "unchanged" (A2).
     const expectedCurrencyCode = typeof form.expectedCurrencyCode === "string" && CURRENCY.test(form.expectedCurrencyCode) ? form.expectedCurrencyCode : null;
-    if (!offer || expectedTotalMinor === null || (currency === "required" && expectedCurrencyCode === null)) return null;
+    if (!offer || expectedTotalMinor === null || expectedCurrencyCode === null) return null;
     const bad =
       malformed(form, "offer", OBJECT_ID) ||
       malformed(form, "expectedTotalMinor", EXPECTED_TOTAL) ||
@@ -344,9 +411,10 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
 
   /**
    * The country to quote and start in: the one the page priced the shown total
-   * in, else the kit's `visitorCountry` (the geo header). Re-quoting in another
-   * country would show a non-member a false "member price". For a member the
-   * API still applies its own rule (the profile country first, A2).
+   * in, else the kit's `visitorCountry` (the geo header). It is sent as `visitorCountry`, the API's FALLBACK: for a
+   * verified member the API prices in the profile country first (A2, Helm #23
+   * on #1963), so the kit never overrides it; a changed total is shown before
+   * any payment ("Pay {amount}"). For a non-member it keeps the shown total.
    */
   async function countryFor(p: Purchase, req: RequestView): Promise<string | undefined> {
     return p.country ?? (await visitorCountryOf(req));
@@ -360,7 +428,9 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
   /** The answer, with the proof cookie dropped when the API says the proof is no good. */
   function paymentAnswer(answer: CodeStepPayment, setCookies: string[] = []): ResponseView {
     const gone = answer.kind === "payment-failed" && PROOF_GONE.has(answer.reason);
-    return json(200, answer, gone ? [...setCookies.filter((c) => !c.startsWith(`${names.proof}=`)), clearProof()] : setCookies);
+    // The proof is gone: drop it, and the held-proof marker with it.
+    const dropped = [`${names.proof}=`, `${names.ticket}=`];
+    return json(200, answer, gone ? [...setCookies.filter((c) => !dropped.some((d) => c.startsWith(d))), clearProof(), clearTicket()] : setCookies);
   }
 
   /**
@@ -374,6 +444,7 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
       ...quoteInput,
       ...(p.paymentGateway ? { paymentGateway: p.paymentGateway } : {}),
       expectedTotalMinor: p.expectedTotalMinor,
+      ...(p.expectedCurrencyCode ? { expectedCurrencyCode: p.expectedCurrencyCode } : {}),
       // Always the site's own return page: never an address from the browser.
       returnUrl,
       ...(p.attribution ? { attribution: p.attribution } : {}),
@@ -423,9 +494,12 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     if (!deps.sameOriginRead(req)) return forbidden();
     const csrf = deps.csrfFor(req.cookies);
     const t = decodeTicket(req.cookies[names.ticket]);
+    // A held proof is offered for resuming only while both cookies say it lives (the API decides at the re-quote).
+    const held = t?.v === 1 && t.x > config.now() && proofOf(req.cookies) !== null;
     const answer: CodeStepRead = {
       formToken: csrf.token,
-      pending: t ? { email: t.e, codeLength: t.l, codeExpiresAt: new Date(t.x).toISOString(), resendAvailableAt: t.r } : null,
+      pending: t && t.v !== 1 ? { email: t.e, codeLength: t.l, codeExpiresAt: new Date(t.x).toISOString(), resendAvailableAt: t.r } : null,
+      held: held ? { email: t!.e, offer: t!.o ?? null } : null,
     };
     const view = json(200, answer, csrf.setCookie ? [csrf.setCookie] : []);
     view.headers.Vary = "Cookie";
@@ -433,7 +507,9 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     return view;
   }
 
-  async function start(email: string, offer: string | undefined, buyerIp: string, botToken: string | undefined): Promise<ResponseView> {
+  async function start(email: string, offer: string | undefined, country: string | undefined, buyerIp: string, botToken: string | undefined): Promise<ResponseView> {
+    // Helm #4: no country, no code. Decided before the API is asked, the same for every email (nothing is spent or enumerated).
+    if (!country) return json(400, { reason: "COUNTRY_REQUIRED" } satisfies CodeStepRefusal);
     const res = await codeStart(config, { email, buyerIp, ...(botToken ? { botToken } : {}) });
     if (!res.ok) {
       const r = refusalOf(res);
@@ -441,7 +517,7 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     }
     await dropOff(email, offer);
     // A new ticket: any proof from an earlier email is dropped (E4).
-    return json(200, browserTicket(res.body), [ticketCookie(res.body, email, offer), clearProof()]);
+    return json(200, browserTicket(res.body), [ticketCookie(res.body, email, offer, country), clearProof()]);
   }
 
   async function startRoute(req: RequestView): Promise<ResponseView> {
@@ -451,41 +527,45 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     const email = typeof form.email === "string" ? form.email.trim().toLowerCase() : "";
     if (email.length > 254 || !EMAIL.test(email)) return json(400, { reason: "WEBSITE_CODE_EMAIL_INVALID" } satisfies CodeStepRefusal);
     const offer = typeof form.offer === "string" && OBJECT_ID.test(form.offer) ? form.offer : undefined;
+    if (malformed(form, "country", OBJECT_ID)) return json(400, { reason: "INVALID_REQUEST" } satisfies CodeStepRefusal);
     const botToken = typeof form.botToken === "string" && form.botToken !== "" && form.botToken.length <= BOT_TOKEN_MAX ? form.botToken : undefined;
     const buyerIp = buyerIpOf(req);
     if (!buyerIp) return json(503, { reason: UNAVAILABLE_REASON } satisfies CodeStepRefusal);
-    return start(email, offer, buyerIp, botToken);
+    const country = typeof form.country === "string" && form.country !== "" ? form.country : await visitorCountryOf(req);
+    return start(email, offer, country, buyerIp, botToken);
   }
 
   async function resendRoute(req: RequestView): Promise<ResponseView> {
     if (req.method !== "POST") return methodNotAllowed("POST");
     if (!sameSiteForm(req)) return forbidden();
     const t = decodeTicket(req.cookies[names.ticket]);
-    if (!t) return json(400, { reason: "WEBSITE_CODE_EXPIRED" } satisfies CodeStepRefusal, [clearTicket()]);
+    // A held-proof marker is not an open step: nothing to resend.
+    if (!t || t.v === 1) return json(400, { reason: "WEBSITE_CODE_EXPIRED" } satisfies CodeStepRefusal, t ? [] : [clearTicket()]);
     const buyerIp = buyerIpOf(req);
     if (!buyerIp) return json(503, { reason: UNAVAILABLE_REASON } satisfies CodeStepRefusal);
+    const restart = async () => start(t.e, t.o, t.c ?? (await visitorCountryOf(req)), buyerIp, undefined);
 
     // §8: on an expired ticket, "Send a new code" starts again with the stored email.
-    if (t.x <= config.now()) return start(t.e, t.o, buyerIp, undefined);
+    if (t.x <= config.now()) return restart();
     const res = await codeResend(config, { ticketId: t.t, buyerIp });
     if (!res.ok) {
-      if (res.error === "refused" && res.reason === "WEBSITE_CODE_EXPIRED") return start(t.e, t.o, buyerIp, undefined);
+      if (res.error === "refused" && res.reason === "WEBSITE_CODE_EXPIRED") return restart();
       const r = refusalOf(res);
       return json(r.status, r.body);
     }
-    return json(200, browserTicket(res.body), [ticketCookie(res.body, t.e, t.o)]);
+    return json(200, browserTicket(res.body), [ticketCookie(res.body, t.e, t.o, t.c)]);
   }
 
   async function verifyRoute(req: RequestView): Promise<ResponseView> {
     if (req.method !== "POST") return methodNotAllowed("POST");
     if (!sameSiteForm(req)) return forbidden();
     const t = decodeTicket(req.cookies[names.ticket]);
-    if (!t || t.x <= config.now()) return json(400, { reason: "WEBSITE_CODE_EXPIRED" } satisfies CodeStepRefusal);
+    if (!t || t.v === 1 || t.x <= config.now()) return json(400, { reason: "WEBSITE_CODE_EXPIRED" } satisfies CodeStepRefusal);
     const form = req.form ?? {};
     const code = typeof form.code === "string" ? form.code.replace(/\D+/g, "") : "";
     // No digits, or more than 12: the code's shape is wrong, so it isn't right (no guess is spent).
     if (!DIGITS.test(code)) return json(400, { reason: "WEBSITE_CODE_INVALID" } satisfies CodeStepRefusal);
-    const purchase = purchaseOf(form, t.o, "required");
+    const purchase = purchaseOf(form, t.o);
     // Before the code is spent: a purchase the kit could not pay for would leave the buyer with a used code.
     if (!purchase) return json(400, { reason: "INVALID_REQUEST" } satisfies CodeStepRefusal);
     const buyerIp = buyerIpOf(req);
@@ -511,35 +591,72 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     // The proof: HttpOnly. No account, no session (D2). The cookie outlives the verify-time life by the PAID
     // extension (30 min after payment, A7), so a buyer who pays near the end still gets the thank-you button; past
     // the proof's real life the context read answers invalid and no button shows.
-    const setCookies = [
-      serializeCookie(names.proof, res.body.proof, { sameSite: "Lax", maxAge: res.body.proofExpiresInSeconds + PROOF_PAID_EXTENSION_S }, local),
-      clearTicket(),
-    ];
+    const proofMaxAge = res.body.proofExpiresInSeconds + PROOF_PAID_EXTENSION_S;
     const buyer = { checkoutProof: res.body.proof, buyerIp };
     const answer = await payAfterVerify(buyer, purchase, await countryFor(purchase, req));
+    const held: TicketCookie = { ...t, v: 1, x: config.now() + proofMaxAge * 1000, ...(answer.kind === "redirect" ? { d: answer.orderId } : {}) };
+    const setCookies = [
+      serializeCookie(names.proof, res.body.proof, { sameSite: "Lax", maxAge: proofMaxAge }, local),
+      // The ticket is used up; the cookie now only marks the held proof (and the order it started), so a reload
+      // resumes at "Pay" (Helm #18) and the thank-you button belongs to that order alone (Helm #26).
+      serializeCookie(names.ticket, encodeTicket(held), { sameSite: "Lax", maxAge: proofMaxAge }, local),
+    ];
     return paymentAnswer(answer, setCookies);
   }
 
   async function payRoute(req: RequestView): Promise<ResponseView> {
     if (req.method !== "POST") return methodNotAllowed("POST");
     if (!sameSiteForm(req)) return forbidden();
-    const purchase = purchaseOf(req.form ?? {}, undefined, "optional");
+    const purchase = purchaseOf(req.form ?? {}, undefined);
     if (!purchase) return json(400, { reason: "INVALID_REQUEST" } satisfies CodeStepRefusal);
     const proof = proofOf(req.cookies);
     if (!proof) return paymentAnswer({ kind: "payment-failed", reason: "CHECKOUT_PROOF_INVALID" });
     const buyerIp = buyerIpOf(req);
     if (!buyerIp) return json(503, { reason: UNAVAILABLE_REASON } satisfies CodeStepRefusal);
     const answer = await startWithProof({ checkoutProof: proof, buyerIp }, purchase, await countryFor(purchase, req));
-    return paymentAnswer(answer);
+    const started = answer.kind === "redirect" ? startedCookie(decodeTicket(req.cookies[names.ticket]), answer.orderId) : null;
+    return paymentAnswer(answer, started ? [started] : []);
   }
 
-  async function checkoutContinueFor(cookies: Record<string, string>): Promise<CheckoutContinue | null> {
+  /**
+   * Helm #18: a reload while the proof is held. The purchase is quoted again with the proof and ALWAYS answered as
+   * `confirm-price`, so the buyer presses "Pay {amount}" at the price they are shown; nothing starts here. A proof
+   * the API no longer takes answers the proof-gone `payment-failed` (the step goes back to the email, quietly).
+   */
+  async function requoteRoute(req: RequestView): Promise<ResponseView> {
+    if (req.method !== "POST") return methodNotAllowed("POST");
+    if (!sameSiteForm(req)) return forbidden();
+    const purchase = purchaseOf(req.form ?? {}, undefined);
+    if (!purchase) return json(400, { reason: "INVALID_REQUEST" } satisfies CodeStepRefusal);
+    const proof = proofOf(req.cookies);
+    const held = decodeTicket(req.cookies[names.ticket]);
+    if (!proof || held?.v !== 1) return paymentAnswer({ kind: "payment-failed", reason: "CHECKOUT_PROOF_INVALID" });
+    const buyerIp = buyerIpOf(req);
+    if (!buyerIp) return json(503, { reason: UNAVAILABLE_REASON } satisfies CodeStepRefusal);
+    const country = await countryFor(purchase, req);
+    const quoted = await checkoutQuote(
+      config,
+      { checkoutProof: proof, buyerIp },
+      { offer: purchase.offer, ...(purchase.couponCode ? { couponCode: purchase.couponCode } : {}), ...(country ? { visitorCountry: country } : {}) },
+      deps.quoteTimeoutMs,
+    );
+    if (!quoted.ok) return paymentAnswer(failed(quoted.error, quoted.reason));
+    const q = quoted.body;
+    if (q.alreadyEnrolled) return paymentAnswer({ kind: "already-owned" });
+    return paymentAnswer({ kind: "confirm-price", totalMinor: q.totalMinor, currencyCode: q.currencyCode, minorUnitExponent: q.minorUnitExponent });
+  }
+
+  async function checkoutContinueFor(cookies: Record<string, string>, input: { orderId: string }): Promise<CheckoutContinue | null> {
+    const orderId = typeof input?.orderId === "string" && OBJECT_ID.test(input.orderId) ? input.orderId : null;
     const proof = proofOf(cookies);
-    if (!proof) return null;
+    // Helm #26 (option a, kit only): the button belongs to the order on this page, and only when the held proof
+    // started that order in this browser. The API's context names no order, so this is the kit's own check.
+    if (!proof || !orderId || !startedHere(cookies, orderId)) return null;
     const res = await proofContext(config, { proof });
     if (!res.ok) return null;
     const continueAs = res.body.continueAs;
     return {
+      orderId,
       continueAs,
       label: continueAs === "sign-up" ? CODE_STEP_COPY.continueSignUp : CODE_STEP_COPY.goToCourse,
       action: CODE_PATHS.checkoutContinue,
@@ -560,7 +677,9 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     if (!sameSiteForm(req)) return forbidden();
     const signIn = (setCookies: string[] = []): ResponseView => json(400, { signInUrl: appHome } satisfies CheckoutContinueAnswer, setCookies);
     const proof = proofOf(req.cookies);
-    if (!proof) return signIn();
+    const form = req.form ?? {};
+    const orderId = typeof form.orderId === "string" && OBJECT_ID.test(form.orderId) ? form.orderId : null;
+    if (!proof || !orderId || !startedHere(req.cookies, orderId)) return signIn();
     const minted = await proofContinue(config, { proof });
     if (!minted.ok) return signIn(minted.error === "refused" && minted.reason === "CHECKOUT_PROOF_INVALID" ? [clearProof()] : []);
     // The proof cookie stays while the API still mints: the app decides a second use (U9a, "That link has
@@ -574,6 +693,7 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     codeResend: resendRoute,
     codeVerify: verifyRoute,
     codePay: payRoute,
+    codeRequote: requoteRoute,
     checkoutContinue: continueRoute,
     checkoutContinueFor,
     clearCookies: () => [clearTicket(), clearProof()],

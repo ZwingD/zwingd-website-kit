@@ -46,10 +46,12 @@ interface Sent {
 type Reply = { status: number; body: unknown };
 
 function fakeServer(
-  replies: Partial<Record<"code-verify" | "code-pay" | "code-resend" | "code-start", Reply | Reply[]>> = {},
+  replies: Partial<Record<"code-verify" | "code-pay" | "code-resend" | "code-start" | "code-requote", Reply | Reply[]>> = {},
   verifyDelayMs = 0,
   /** What each GET /session/code-step answers as `formToken`, in turn (the last one repeats). */
   formTokens: string[] = [CSRF],
+  /** What GET /session/code-step answers as `held` (Helm #18). */
+  held: { email: string; offer: string | null } | null = null,
 ) {
   const sent: Sent[] = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -58,7 +60,7 @@ function fakeServer(
     const reply = (r: Reply) => new Response(JSON.stringify(r.body), { status: r.status, headers: { "Content-Type": "application/json" } });
     if (path.endsWith("/code-step")) {
       const reads = sent.filter((x) => x.path.endsWith("/code-step")).length;
-      return reply({ status: 200, body: { formToken: formTokens[Math.min(reads, formTokens.length) - 1], pending: null } });
+      return reply({ status: 200, body: { formToken: formTokens[Math.min(reads, formTokens.length) - 1], pending: null, held } });
     }
     const name = path.slice(path.lastIndexOf("/") + 1) as keyof typeof replies;
     const configured = replies[name] ?? (name === "code-start" ? { status: 200, body: TICKET } : undefined);
@@ -91,6 +93,7 @@ async function mount(server: ReturnType<typeof fakeServer>, extra: { terms?: typ
       offer: OFFER,
       expectedTotalMinor: "9900",
       expectedCurrencyCode: "USD",
+      workspaceName: "Acme Learning",
       storageKey: (id) => `example:checkout:order:${id}`,
       storage: { setItem: (k, v) => void stored.set(k, v) },
       navigate: (url) => void navigated.push(url),
@@ -448,4 +451,84 @@ test("terms that arrive after the first render (loaded later) still show the tic
   assert.equal(handle.current!.state.error?.reason, "WEBSITE_TERMS_REQUIRED");
   assert.equal(server.sent.filter((x) => x.path === "/session/code-verify").length, 0, "no guess spent");
   await unmount();
+});
+
+// ---- Helm's answers on ZwingD/zwingd-backend#1963 (2026-10-29) ---------------------------------------
+
+test("Helm #4: the page's country goes with the code start (and its restart); without it the start says COUNTRY_REQUIRED at the country field", async () => {
+  const COUNTRY_ID = "6520f1c2a3b4c5d6e7f80a05";
+  const withCountry = fakeServer();
+  const a = await mount(withCountry, { country: COUNTRY_ID });
+  await a.act(async () => { await a.handle.current!.sendCode("buyer@example.org"); });
+  assert.equal(withCountry.sent.find((x) => x.path === "/session/code-start")!.form.country, COUNTRY_ID);
+  await a.unmount();
+
+  const none = fakeServer({ "code-start": { status: 400, body: { reason: "COUNTRY_REQUIRED" } } });
+  const b = await mount(none);
+  await b.act(async () => { await b.handle.current!.sendCode("buyer@example.org"); });
+  assert.equal("country" in none.sent.find((x) => x.path === "/session/code-start")!.form, false);
+  assert.equal(b.handle.current!.state.step, "email");
+  assert.equal(b.handle.current!.state.error?.field, "country");
+  assert.equal(b.handle.current!.state.error?.message, "Choose your country to continue.");
+  await b.unmount();
+});
+
+test("Helm #16: a payment refused for good names the workspace; one that may start on a retry says so", async () => {
+  const server = fakeServer({ "code-verify": [{ status: 200, body: { kind: "payment-failed", reason: "HOSTED_GUEST_INVALID" } }] });
+  const { act, handle, unmount } = await mount(server);
+  await act(async () => { await handle.current!.sendCode("buyer@example.org"); });
+  await act(async () => { handle.current!.setCode("123456"); });
+  await act(async () => { await handle.current!.verify(); });
+  await settle(act);
+  assert.equal(handle.current!.state.step, "pay-failed");
+  assert.equal(handle.current!.state.error?.message, "We couldn't take this payment. Try again, or contact Acme Learning.");
+  await unmount();
+
+  const retry = fakeServer({ "code-verify": [{ status: 200, body: { kind: "payment-failed", reason: "UNAVAILABLE" } }] });
+  const r = await mount(retry);
+  await r.act(async () => { await r.handle.current!.sendCode("buyer@example.org"); });
+  await r.act(async () => { r.handle.current!.setCode("123456"); });
+  await r.act(async () => { await r.handle.current!.verify(); });
+  await settle(r.act);
+  assert.equal(r.handle.current!.state.error?.message, "We couldn't start your payment. Try again.");
+  await r.unmount();
+});
+
+test("Helm #18: a reload with the proof held for THIS offer resumes at 'Pay {amount}' (one re-quote, no code, no start)", async () => {
+  const server = fakeServer(
+    { "code-requote": { status: 200, body: { kind: "confirm-price", totalMinor: "9900", currencyCode: "USD", minorUnitExponent: 2 } }, "code-pay": { status: 200, body: REDIRECT } },
+    0,
+    [CSRF],
+    { email: "buyer@example.org", offer: OFFER },
+  );
+  const { act, container, handle, navigated, unmount } = await mount(server);
+  await settle(act, 20);
+  const s = handle.current!;
+  assert.equal(s.state.step, "confirm-price");
+  assert.equal(s.state.email, "buyer@example.org");
+  assert.equal(q(container, "#pay").textContent, "Pay $99.00");
+  const requote = server.sent.filter((x) => x.path === "/session/code-requote");
+  assert.equal(requote.length, 1);
+  assert.deepEqual(requote[0]!.form, { csrf: CSRF, offer: OFFER, expectedTotalMinor: "9900", expectedCurrencyCode: "USD" });
+  assert.equal(server.sent.filter((x) => ["/session/code-start", "/session/code-verify", "/session/code-pay"].includes(x.path)).length, 0);
+  await act(async () => { await handle.current!.pay(); });
+  await settle(act);
+  assert.deepEqual(navigated, [REDIRECT.url]);
+  await unmount();
+});
+
+test("Helm #18: a proof held for ANOTHER offer is not resumed; a held proof the server no longer takes goes back to email quietly", async () => {
+  const other = fakeServer({}, 0, [CSRF], { email: "buyer@example.org", offer: "6520f1c2a3b4c5d6e7f80aff" });
+  const a = await mount(other);
+  await settle(a.act, 20);
+  assert.equal(a.handle.current!.state.step, "email");
+  assert.equal(other.sent.filter((x) => x.path === "/session/code-requote").length, 0);
+  await a.unmount();
+
+  const gone = fakeServer({ "code-requote": { status: 200, body: { kind: "payment-failed", reason: "CHECKOUT_PROOF_INVALID" } } }, 0, [CSRF], { email: "buyer@example.org", offer: OFFER });
+  const b = await mount(gone);
+  await settle(b.act, 20);
+  assert.equal(b.handle.current!.state.step, "email");
+  assert.equal(b.handle.current!.state.error, null);
+  await b.unmount();
 });
