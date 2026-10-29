@@ -106,6 +106,8 @@ const NAME_MAX = 60;
 const DOCS_MAX = 10;
 const DOC_VALUE_MAX = 64;
 const ATTRIBUTION_MAX = 200;
+/** The most the API's PAID extension adds past the verify-time life (30 min after payment, spec §4.3, A7). */
+const PROOF_PAID_EXTENSION_S = 30 * 60;
 /** Refusals of a checkout call with a proof after which the proof is no good: the cookie is dropped. */
 const PROOF_GONE = new Set(["CHECKOUT_PROOF_INVALID", "CHECKOUT_PROOF_EMAIL_MISMATCH", "EMAIL_VERIFICATION_REQUIRED"]);
 
@@ -454,9 +456,11 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
       return json(r.status, r.body);
     }
 
-    // The proof: HttpOnly, only for its own life. No account, no session (D2).
+    // The proof: HttpOnly. No account, no session (D2). The cookie outlives the verify-time life by the PAID
+    // extension (30 min after payment, A7), so a buyer who pays near the end still gets the thank-you button; past
+    // the proof's real life the context read answers invalid and no button shows.
     const setCookies = [
-      serializeCookie(names.proof, res.body.proof, { sameSite: "Lax", maxAge: res.body.proofExpiresInSeconds }, local),
+      serializeCookie(names.proof, res.body.proof, { sameSite: "Lax", maxAge: res.body.proofExpiresInSeconds + PROOF_PAID_EXTENSION_S }, local),
       clearTicket(),
     ];
     if (!purchase.offer) return paymentAnswer({ kind: "payment-failed", reason: UNAVAILABLE_REASON }, setCookies);
@@ -507,7 +511,8 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     if (!proof) return signIn();
     const minted = await proofContinue(config, { proof });
     if (!minted.ok) return signIn(minted.error === "refused" && minted.reason === "CHECKOUT_PROOF_INVALID" ? [clearProof()] : []);
-    // The proof cookie stays: a second press mints again, and the app answers "That link has expired" (U9a).
+    // The proof cookie stays while the API still mints: the app decides a second use (U9a, "That link has
+    // expired"). Once the API refuses the mint CHECKOUT_PROOF_INVALID, the cookie is dropped above.
     return json(200, { nonce: minted.body.nonce, continueUrl: minted.body.continueUrl } satisfies CheckoutContinueAnswer);
   }
 

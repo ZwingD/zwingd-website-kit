@@ -17,7 +17,7 @@
  *     The nonce lives only in that handler's local variable and the form's
  *     body: no state, no storage, no URL, no log. The app still asks
  *     "Continue as {email}" before signing in. Any failure opens the app's
- *     normal sign-in.
+ *     normal sign-in, including a form value that cannot be read.
  */
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 
@@ -116,10 +116,17 @@ export function CheckoutContinueButton({ next, className, basePath, formToken, f
   const signInUrl = next.signInUrl;
 
   async function press() {
-    if (!csrf || pressing.current) return;
+    if (pressing.current) return;
     pressing.current = true;
     setBusy(true);
     const go = navigate ?? ((url: string) => (globalThis as { location?: { assign(u: string): void } }).location?.assign(url));
+    const read = () => createCodeStepClient({ ...(basePath ? { basePath } : {}), ...(fetchImpl ? { fetch: fetchImpl } : {}) }).read();
+    // The read on load failed: try once more now; without a form value the continue cannot be asked (E10).
+    const token = csrf ?? (await read())?.formToken ?? null;
+    if (!token) {
+      go(signInUrl);
+      return;
+    }
     const ask = async (token: string): Promise<{ status: number; body: { nonce?: unknown; continueUrl?: unknown } | null }> => {
       try {
         const res = await (fetchImpl ?? globalThis.fetch)(endpoint, {
@@ -133,14 +140,14 @@ export function CheckoutContinueButton({ next, className, basePath, formToken, f
         return { status: 0, body: null };
       }
     };
-    let first = await ask(csrf);
+    let first = await ask(token);
     // 403: the form value went stale (another route dropped the cookie). The kit refused before any call, so ask
     // again ONCE with a fresh value.
     if (first.status === 403) {
-      const read = await createCodeStepClient({ ...(basePath ? { basePath } : {}), ...(fetchImpl ? { fetch: fetchImpl } : {}) }).read();
-      if (read) {
-        setCsrf(read.formToken);
-        first = await ask(read.formToken);
+      const fresh = await read();
+      if (fresh && fresh.formToken !== token) {
+        setCsrf(fresh.formToken);
+        first = await ask(fresh.formToken);
       }
     }
     const answer = first.body;
@@ -172,7 +179,7 @@ export function CheckoutContinueButton({ next, className, basePath, formToken, f
   }
 
   return (
-    <button type="button" className={className} disabled={!csrf || busy} aria-disabled={!csrf || busy} aria-busy={busy} onClick={() => void press()}>
+    <button type="button" className={className} disabled={busy} aria-disabled={busy} aria-busy={busy} onClick={() => void press()}>
       {next.label}
     </button>
   );

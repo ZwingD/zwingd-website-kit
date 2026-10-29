@@ -249,7 +249,8 @@ test("code-verify, total unchanged: proof cookie (HttpOnly), NO session, re-quot
   assert.ok(!res.body!.includes(PROOF));
   const proof = cookieNamed(res.setCookies, "__Host-zw_proof")!;
   assert.match(proof, new RegExp(`^__Host-zw_proof=${PROOF};`));
-  for (const attr of [/HttpOnly/, /Secure/, /SameSite=Lax/, /Path=\//, /Max-Age=7200/]) assert.match(proof, attr);
+  for (const attr of [/HttpOnly/, /Secure/, /SameSite=Lax/, /Path=\//, /Max-Age=9000/]) assert.match(proof, attr);
+  // 7200 s of verify-time life + the 30 min the PAID extension can add (A7): a buyer who pays near the end keeps the button.
   // No account, no session (D2).
   assert.equal(cookieNamed(res.setCookies, "__Host-zw_session"), undefined);
   assert.equal(cookieNamed(res.setCookies, "__Host-zw_new"), undefined);

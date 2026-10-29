@@ -111,7 +111,7 @@ after(async () => {
 
 const NEXT = { continueAs: "sign-up" as const, label: "Continue sign-up", action: "/session/checkout-continue", signInUrl: `${APP}/` };
 
-async function renderButton(answer: { status: number; body: unknown } | "network" | { status: number; body: unknown }[], formTokens: string[] = [CSRF]) {
+async function renderButton(answer: { status: number; body: unknown } | "network" | { status: number; body: unknown }[], formTokens: (string | null)[] = [CSRF]) {
   const React = await import("react");
   const REACT_DOM_CLIENT = "react-dom/client";
   const { createRoot } = (await import(REACT_DOM_CLIENT)) as { createRoot(el: unknown): { render(n: unknown): void; unmount(): void } };
@@ -121,7 +121,9 @@ async function renderButton(answer: { status: number; body: unknown } | "network
     fetched.push({ url: String(input), ...(init ? { init } : {}) });
     if (String(input).endsWith("/code-step")) {
       const reads = fetched.filter((f) => f.url.endsWith("/code-step")).length;
-      return new Response(JSON.stringify({ formToken: formTokens[Math.min(reads, formTokens.length) - 1], pending: null }), { status: 200 });
+      const formToken = formTokens[Math.min(reads, formTokens.length) - 1];
+      if (formToken === null) throw new TypeError("fetch failed");
+      return new Response(JSON.stringify({ formToken, pending: null }), { status: 200 });
     }
     if (answer === "network") throw new TypeError("fetch failed");
     const r = Array.isArray(answer) ? answer[fetched.filter((f) => f.url.endsWith("/checkout-continue")).length - 1]! : answer;
@@ -222,6 +224,24 @@ test("CheckoutContinueButton: a stale form value (403) is read again and the pre
   await b.press();
   const asks = b.fetched.filter((f) => f.url === "/session/checkout-continue");
   assert.deepEqual(asks.map((f) => String(f.init?.body)), [`csrf=${CSRF}`, `csrf=${FRESH}`]);
+  assert.equal(b.submitted.length, 1);
+  assert.deepEqual(b.navigated, []);
+  await b.unmount();
+});
+
+test("CheckoutContinueButton: the form value read fails: the button still works, and a press without one opens the app's sign-in (E10)", async () => {
+  const b = await renderButton({ status: 200, body: { nonce: NONCE, continueUrl: `${APP}/session/checkout-continue` } }, [null]);
+  assert.equal((b.container.querySelector("button") as unknown as HTMLButtonElement).disabled, false);
+  await b.press();
+  assert.equal(b.fetched.filter((f) => f.url === "/session/checkout-continue").length, 0);
+  assert.deepEqual(b.navigated, [`${APP}/`]);
+  assert.deepEqual(b.submitted, []);
+  await b.unmount();
+});
+
+test("CheckoutContinueButton: the read failed on load but works at the press: it continues", async () => {
+  const b = await renderButton({ status: 200, body: { nonce: NONCE, continueUrl: `${APP}/session/checkout-continue` } }, [null, CSRF]);
+  await b.press();
   assert.equal(b.submitted.length, 1);
   assert.deepEqual(b.navigated, []);
   await b.unmount();
