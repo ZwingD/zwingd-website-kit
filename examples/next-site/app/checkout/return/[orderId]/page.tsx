@@ -23,7 +23,8 @@ export default async function CheckoutReturnPage({
   const { orderId } = await params;
   const { course } = await searchParams;
   const kit = zwingd();
-  const next = await getCheckoutContinue(kit);
+  // The button for THIS order only (Helm #26): the kit checks the held proof started it in this browser.
+  const next = await getCheckoutContinue(kit, { orderId });
   const courseCode = typeof course === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(course) ? course : null;
   return <CheckoutReturn orderId={orderId} next={next} courseHref={kit.courseUrl(courseCode ?? "")} />;
 }

@@ -280,7 +280,7 @@ step.resend(); step.changeEmail();
 
 ### The thank-you page
 
-On the return page's **server**, `await getCheckoutContinue(kit)` (`@zwingd-ce/website-kit-next/server`) reads the proof context and answers the button: `{ label: "Continue sign-up" | "Go to my course", action, continueAs, signInUrl }`, or `null` when this browser holds no proof that is still good, or the context read fails (an API fault). Draw it with `<CheckoutContinueButton next={next} />` (client), or show your usual course link when it is `null`.
+On the return page's **server**, `await getCheckoutContinue(kit, { orderId })` (`@zwingd-ce/website-kit-next/server`) reads the proof context and answers the button for that order: `{ orderId, label: "Continue sign-up" | "Go to my course", action, continueAs, signInUrl }`, or `null` when this browser holds no proof that is still good, the proof did not start this order in this browser, or the context read fails (an API fault). Draw it with `<CheckoutContinueButton next={next} storageKey={...} />` (client; drawn only when this tab holds the order's record), or show your usual course link when it is `null`. Keep `continueAs` out of browser storage, addresses and logs.
 
 ```tsx
 // app/checkout/return/[orderId]/page.tsx (Server Component)

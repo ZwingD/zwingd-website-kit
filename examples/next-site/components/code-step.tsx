@@ -30,6 +30,8 @@ export function CodeStep(props: {
     expectedTotalMinor: props.expectedTotalMinor,
     expectedCurrencyCode: props.expectedCurrencyCode,
     country: props.country ?? null,
+    // "We couldn't take this payment. Try again, or contact {workspace}." (Helm #16).
+    workspaceName: "Example Academy",
     storageKey: orderStorageKey,
     coursePath: typeof window === "undefined" ? null : window.location.pathname,
     ...(props.terms ? { terms: props.terms.documents } : {}),
@@ -63,6 +65,9 @@ export function CodeStep(props: {
         <button type="submit" disabled={step.busy}>Send code</button>
       </form>
     );
+  } else if (state.step === "resuming") {
+    // A reload with the proof still held: the kit is quoting again, then shows "Pay {amount}" (Helm #18).
+    body = <p aria-busy="true">Loading…</p>;
   } else if (state.step === "owned") {
     body = <OwnedCourse courseCode={props.courseCode} message={state.settled ? "This course is yours now." : "You already have this course."} />;
   } else if (state.step === "confirm-price" || state.step === "pay-failed" || (state.step === "paying" && state.price)) {

@@ -26,7 +26,7 @@ export function CheckoutReturn({ orderId, next, courseHref }: { orderId: string;
     <section>
       <h1>Thank you</h1>
       <p>Your order {orderId} is on its way. This page would now confirm the payment with the stored order token.</p>
-      {next ? <CheckoutContinueButton next={next} /> : <a href={courseHref}>{CODE_STEP_COPY.goToCourse}</a>}
+      {next ? <CheckoutContinueButton next={next} storageKey={orderStorageKey} /> : <a href={courseHref}>{CODE_STEP_COPY.goToCourse}</a>}
     </section>
   ) : (
     <section>
