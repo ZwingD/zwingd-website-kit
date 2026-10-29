@@ -45,13 +45,21 @@ interface Sent {
 
 type Reply = { status: number; body: unknown };
 
-function fakeServer(replies: Partial<Record<"code-verify" | "code-pay" | "code-resend" | "code-start", Reply | Reply[]>> = {}, verifyDelayMs = 0) {
+function fakeServer(
+  replies: Partial<Record<"code-verify" | "code-pay" | "code-resend" | "code-start", Reply | Reply[]>> = {},
+  verifyDelayMs = 0,
+  /** What each GET /session/code-step answers as `formToken`, in turn (the last one repeats). */
+  formTokens: string[] = [CSRF],
+) {
   const sent: Sent[] = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const path = String(input);
     sent.push({ path, form: Object.fromEntries(new URLSearchParams(String(init?.body ?? ""))) });
     const reply = (r: Reply) => new Response(JSON.stringify(r.body), { status: r.status, headers: { "Content-Type": "application/json" } });
-    if (path.endsWith("/code-step")) return reply({ status: 200, body: { formToken: CSRF, pending: null } });
+    if (path.endsWith("/code-step")) {
+      const reads = sent.filter((x) => x.path.endsWith("/code-step")).length;
+      return reply({ status: 200, body: { formToken: formTokens[Math.min(reads, formTokens.length) - 1], pending: null } });
+    }
     const name = path.slice(path.lastIndexOf("/") + 1) as keyof typeof replies;
     const configured = replies[name] ?? (name === "code-start" ? { status: 200, body: TICKET } : undefined);
     const r = Array.isArray(configured) ? configured[sent.filter((s) => s.path === path).length - 1] : configured;
@@ -334,5 +342,32 @@ test("country: the page's priced-in country is posted with verify and pay", asyn
   await settle(act);
   assert.equal(server.sent.find((x) => x.path === "/session/code-verify")!.form.country, COUNTRY_ID);
   assert.equal(server.sent.find((x) => x.path === "/session/code-pay")!.form.country, COUNTRY_ID);
+  await unmount();
+});
+
+test("a stale form value (403 from the kit, nothing spent) is read again and the POST sent ONCE more with the fresh one", async () => {
+  const FRESH = "d".repeat(43);
+  const server = fakeServer({ "code-verify": [{ status: 403, body: {} }, { status: 200, body: REDIRECT }] }, 0, [CSRF, FRESH]);
+  const { act, handle, navigated, unmount } = await mount(server);
+  await act(async () => { await handle.current!.sendCode("buyer@example.org"); });
+  await act(async () => { handle.current!.setCode("123456"); });
+  await act(async () => { await handle.current!.verify(); });
+  await settle(act);
+  const verifies = server.sent.filter((x) => x.path === "/session/code-verify");
+  assert.deepEqual(verifies.map((v) => v.form.csrf), [CSRF, FRESH]);
+  assert.equal(handle.current!.state.step, "paying");
+  assert.deepEqual(navigated, [REDIRECT.url]);
+  await unmount();
+});
+
+test("a 403 that a fresh read does not cure is not retried again: the generic line", async () => {
+  const server = fakeServer({ "code-verify": { status: 403, body: {} } });
+  const { act, handle, unmount } = await mount(server);
+  await act(async () => { await handle.current!.sendCode("buyer@example.org"); });
+  await act(async () => { handle.current!.setCode("123456"); });
+  await act(async () => { await handle.current!.verify(); });
+  await settle(act);
+  assert.equal(server.sent.filter((x) => x.path === "/session/code-verify").length, 1, "the same value again would be refused again");
+  assert.equal(handle.current!.state.error?.reason, "UNAVAILABLE");
   await unmount();
 });

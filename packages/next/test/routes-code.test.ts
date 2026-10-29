@@ -111,7 +111,7 @@ after(async () => {
 
 const NEXT = { continueAs: "sign-up" as const, label: "Continue sign-up", action: "/session/checkout-continue", signInUrl: `${APP}/` };
 
-async function renderButton(answer: { status: number; body: unknown } | "network") {
+async function renderButton(answer: { status: number; body: unknown } | "network" | { status: number; body: unknown }[], formTokens: string[] = [CSRF]) {
   const React = await import("react");
   const REACT_DOM_CLIENT = "react-dom/client";
   const { createRoot } = (await import(REACT_DOM_CLIENT)) as { createRoot(el: unknown): { render(n: unknown): void; unmount(): void } };
@@ -119,9 +119,13 @@ async function renderButton(answer: { status: number; body: unknown } | "network
   const fetched: { url: string; init?: RequestInit }[] = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     fetched.push({ url: String(input), ...(init ? { init } : {}) });
-    if (String(input).endsWith("/code-step")) return new Response(JSON.stringify({ formToken: CSRF, pending: null }), { status: 200 });
+    if (String(input).endsWith("/code-step")) {
+      const reads = fetched.filter((f) => f.url.endsWith("/code-step")).length;
+      return new Response(JSON.stringify({ formToken: formTokens[Math.min(reads, formTokens.length) - 1], pending: null }), { status: 200 });
+    }
     if (answer === "network") throw new TypeError("fetch failed");
-    return new Response(JSON.stringify(answer.body), { status: answer.status, headers: { "Content-Type": "application/json" } });
+    const r = Array.isArray(answer) ? answer[fetched.filter((f) => f.url.endsWith("/checkout-continue")).length - 1]! : answer;
+    return new Response(JSON.stringify(r.body), { status: r.status, headers: { "Content-Type": "application/json" } });
   }) as typeof fetch;
   const submitted: { action: string; method: string; fields: Record<string, string> }[] = [];
   const navigated: string[] = [];
@@ -193,6 +197,34 @@ test("CheckoutContinueButton: a failure answer, a network fault or a continueUrl
     assert.deepEqual(b.submitted, []);
     await b.unmount();
   }
+});
+
+test("CheckoutContinueButton: a double click before the re-render still mints ONE nonce and submits ONE form", async () => {
+  const React = await import("react");
+  const b = await renderButton({ status: 200, body: { nonce: NONCE, continueUrl: `${APP}/session/checkout-continue` } });
+  await React.act(async () => {
+    const button = b.container.querySelector("button") as unknown as HTMLButtonElement;
+    button.click();
+    button.click();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+  assert.equal(b.fetched.filter((f) => f.url === "/session/checkout-continue").length, 1);
+  assert.equal(b.submitted.length, 1);
+  await b.unmount();
+});
+
+test("CheckoutContinueButton: a stale form value (403) is read again and the press asks ONCE more", async () => {
+  const FRESH = "d".repeat(43);
+  const b = await renderButton(
+    [{ status: 403, body: {} }, { status: 200, body: { nonce: NONCE, continueUrl: `${APP}/session/checkout-continue` } }],
+    [CSRF, FRESH],
+  );
+  await b.press();
+  const asks = b.fetched.filter((f) => f.url === "/session/checkout-continue");
+  assert.deepEqual(asks.map((f) => String(f.init?.body)), [`csrf=${CSRF}`, `csrf=${FRESH}`]);
+  assert.equal(b.submitted.length, 1);
+  assert.deepEqual(b.navigated, []);
+  await b.unmount();
 });
 
 test("CheckoutContinueButton: null draws nothing", async () => {

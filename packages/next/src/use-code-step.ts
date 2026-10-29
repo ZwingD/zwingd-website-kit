@@ -169,7 +169,8 @@ export interface CodeStep {
   };
 }
 
-type Answer<T> = { ok: true; body: T } | { ok: false; refusal: CodeStepRefusal };
+/** `forbidden`: the kit refused the POST itself (403, the same-site rule) before any API call, e.g. a stale form value. */
+type Answer<T> = { ok: true; body: T } | { ok: false; refusal: CodeStepRefusal; forbidden?: true };
 
 const unavailable = (): { ok: false; refusal: CodeStepRefusal } => ({ ok: false, refusal: { reason: UNAVAILABLE_REASON } });
 
@@ -186,6 +187,7 @@ export function createCodeStepClient(options: { basePath?: string; fetch?: typeo
         headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
         body: new URLSearchParams(form).toString(),
       });
+      if (res.status === 403) return { ...unavailable(), forbidden: true };
       const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
       if (res.ok && body) return { ok: true, body: body as T };
       if (body && typeof body.reason === "string") return { ok: false, refusal: body as unknown as CodeStepRefusal };
@@ -306,6 +308,21 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
     return token.current;
   }
 
+  /**
+   * One POST with the form value. A 403 means the value went stale (e.g. /session/me dropped the cookie for an
+   * ended session while the step was open): the kit refused before calling the API, so nothing was spent, and the
+   * POST is sent again ONCE with a fresh value.
+   */
+  async function withFormToken<T>(send: (csrf: string) => Promise<Answer<T>>): Promise<Answer<T>> {
+    const csrf = await formToken();
+    if (!csrf) return unavailable();
+    const res = await send(csrf);
+    if (res.ok || !res.forbidden) return res;
+    token.current = null;
+    const fresh = await formToken();
+    return fresh && fresh !== csrf ? send(fresh) : res;
+  }
+
   /** The double-submit guard: one call at a time, whatever the buttons do. */
   async function once(run: () => Promise<void>): Promise<void> {
     if (inFlight.current) return;
@@ -358,14 +375,14 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
       once(async () => {
         if (stateRef.current.step !== "email") return;
         dispatch({ type: "send", email });
-        const csrf = await formToken();
-        if (!csrf) return dispatch({ type: "failed", refusal: { reason: UNAVAILABLE_REASON } });
-        const res = await client.start({
-          csrf,
-          email: email.trim(),
-          offer: optionsRef.current.offer,
-          ...(extras.botToken ? { botToken: extras.botToken } : {}),
-        });
+        const res = await withFormToken((csrf) =>
+          client.start({
+            csrf,
+            email: email.trim(),
+            offer: optionsRef.current.offer,
+            ...(extras.botToken ? { botToken: extras.botToken } : {}),
+          }),
+        );
         dispatch(res.ok ? { type: "sent", ticket: res.body, now: now() } : { type: "failed", refusal: res.refusal });
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -378,12 +395,10 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
         const s = stateRef.current;
         if (!resendCountdown(s, now()).canResend) return;
         dispatch({ type: "resend" });
-        const csrf = await formToken();
-        if (!csrf) return dispatch({ type: "failed", refusal: { reason: UNAVAILABLE_REASON } });
-        let res = await client.resend({ csrf });
+        let res = await withFormToken((csrf) => client.resend({ csrf }));
         // §8: the ticket is gone altogether (cookie lost) → start again with the email the step holds.
         if (!res.ok && res.refusal.reason === "WEBSITE_CODE_EXPIRED" && s.email) {
-          res = await client.start({ csrf, email: s.email, offer: optionsRef.current.offer });
+          res = await withFormToken((csrf) => client.start({ csrf, email: s.email, offer: optionsRef.current.offer }));
         }
         dispatch(res.ok ? { type: "sent", ticket: res.body, now: now() } : { type: "failed", refusal: res.refusal, now: now() });
       }),
@@ -400,17 +415,17 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
         const o = optionsRef.current;
         // Terms required and not ticked: say so here, without spending a guess.
         if (s.termsRequired && !s.termsAccepted) return dispatch({ type: "failed", refusal: { reason: "WEBSITE_TERMS_REQUIRED" } });
-        const csrf = await formToken();
-        if (!csrf) return dispatch({ type: "failed", refusal: { reason: UNAVAILABLE_REASON } });
         const docs = s.termsAccepted ? (o.terms ?? []) : [];
-        const res = await client.verify({
-          csrf,
-          code: normalizeCode(codeRef.current, s.codeLength),
-          ...(extras.firstName ? { firstName: extras.firstName } : {}),
-          ...(extras.lastName ? { lastName: extras.lastName } : {}),
-          ...(docs.length > 0 ? { acceptedDocuments: JSON.stringify(docs) } : {}),
-          ...purchaseForm(o.expectedTotalMinor),
-        });
+        const res = await withFormToken((csrf) =>
+          client.verify({
+            csrf,
+            code: normalizeCode(codeRef.current, s.codeLength),
+            ...(extras.firstName ? { firstName: extras.firstName } : {}),
+            ...(extras.lastName ? { lastName: extras.lastName } : {}),
+            ...(docs.length > 0 ? { acceptedDocuments: JSON.stringify(docs) } : {}),
+            ...purchaseForm(o.expectedTotalMinor),
+          }),
+        );
         settle(res);
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -423,11 +438,9 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
         const s = stateRef.current;
         if (s.step !== "confirm-price" && s.step !== "pay-failed") return;
         dispatch({ type: "pay" });
-        const csrf = await formToken();
-        if (!csrf) return dispatch({ type: "failed", refusal: { reason: UNAVAILABLE_REASON } });
         // The price the buyer was shown: the member price, else the page's own.
         const total = s.price?.totalMinor ?? optionsRef.current.expectedTotalMinor;
-        settle(await client.pay({ csrf, ...purchaseForm(total) }));
+        settle(await withFormToken((csrf) => client.pay({ csrf, ...purchaseForm(total) })));
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],

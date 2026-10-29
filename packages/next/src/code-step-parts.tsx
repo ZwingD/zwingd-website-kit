@@ -19,7 +19,7 @@
  *     "Continue as {email}" before signing in. Any failure opens the app's
  *     normal sign-in.
  */
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 
 import { APP_CONTINUE_PATH, type CheckoutContinue } from "@zwingd-ce/website-kit";
 
@@ -83,6 +83,8 @@ function continueUrlOk(value: unknown): value is string {
 export function CheckoutContinueButton({ next, className, basePath, formToken, fetch: fetchImpl, submit, navigate }: CheckoutContinueButtonProps) {
   const [csrf, setCsrf] = useState<string | null>(formToken ?? null);
   const [busy, setBusy] = useState(false);
+  // The one-press guard: `busy` is a render's copy, so a second click before the re-render would mint a second nonce.
+  const pressing = useRef(false);
 
   useEffect(() => {
     if (csrf || !next) return;
@@ -100,7 +102,10 @@ export function CheckoutContinueButton({ next, className, basePath, formToken, f
 
   // Back from the app (U9a): a page restored from the back/forward cache may be pressed again.
   useEffect(() => {
-    const again = () => setBusy(false);
+    const again = () => {
+      pressing.current = false;
+      setBusy(false);
+    };
     globalThis.addEventListener?.("pageshow", again);
     return () => globalThis.removeEventListener?.("pageshow", again);
   }, []);
@@ -111,11 +116,11 @@ export function CheckoutContinueButton({ next, className, basePath, formToken, f
   const signInUrl = next.signInUrl;
 
   async function press() {
-    if (!csrf || busy) return;
-    const token = csrf;
+    if (!csrf || pressing.current) return;
+    pressing.current = true;
     setBusy(true);
     const go = navigate ?? ((url: string) => (globalThis as { location?: { assign(u: string): void } }).location?.assign(url));
-    const answer = await (async (): Promise<{ nonce?: unknown; continueUrl?: unknown } | null> => {
+    const ask = async (token: string): Promise<{ status: number; body: { nonce?: unknown; continueUrl?: unknown } | null }> => {
       try {
         const res = await (fetchImpl ?? globalThis.fetch)(endpoint, {
           method: "POST",
@@ -123,11 +128,22 @@ export function CheckoutContinueButton({ next, className, basePath, formToken, f
           headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
           body: new URLSearchParams({ csrf: token }).toString(),
         });
-        return res.ok ? ((await res.json()) as { nonce?: unknown; continueUrl?: unknown }) : null;
+        return { status: res.status, body: res.ok ? ((await res.json()) as { nonce?: unknown; continueUrl?: unknown }) : null };
       } catch {
-        return null;
+        return { status: 0, body: null };
       }
-    })();
+    };
+    let first = await ask(csrf);
+    // 403: the form value went stale (another route dropped the cookie). The kit refused before any call, so ask
+    // again ONCE with a fresh value.
+    if (first.status === 403) {
+      const read = await createCodeStepClient({ ...(basePath ? { basePath } : {}), ...(fetchImpl ? { fetch: fetchImpl } : {}) }).read();
+      if (read) {
+        setCsrf(read.formToken);
+        first = await ask(read.formToken);
+      }
+    }
+    const answer = first.body;
     const nonce = answer?.nonce;
     const continueUrl = answer?.continueUrl;
     if (typeof nonce !== "string" || !NONCE.test(nonce) || !continueUrlOk(continueUrl)) {
@@ -145,7 +161,14 @@ export function CheckoutContinueButton({ next, className, basePath, formToken, f
     input.value = nonce;
     form.appendChild(input);
     document.body.appendChild(form);
-    (submit ?? ((f: HTMLFormElement) => f.submit()))(form);
+    (
+      submit ??
+      ((f: HTMLFormElement) => {
+        f.submit();
+        // The submission is under way: the used nonce is not left in the page (e.g. one restored from the back/forward cache).
+        f.remove();
+      })
+    )(form);
   }
 
   return (
