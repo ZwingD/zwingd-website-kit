@@ -44,7 +44,7 @@ export type CodeStepReason = CodeReason | KitReason | "PRICE_CHANGED" | "ALREADY
 
 /**
  * The step's copy, exactly as signed (spec §8a; Helm's answers on #1963, 2026-10-29: #5 the proof and API lines,
- * #16 the payment lines). A site may restyle it, never reword it. `chooseCountry` is the one line not yet signed.
+ * #16 the payment lines, Q4 `chooseCountry`). A site may restyle it, never reword it.
  */
 export const CODE_STEP_COPY = Object.freeze({
   heading: "Check your email",
@@ -81,7 +81,7 @@ export const CODE_STEP_COPY = Object.freeze({
   codesUnavailable: "Email codes aren't available here right now. Try again later.",
   /** #5 the bot-check refusals (BOT_CHECK_FAILED, BOT_CHECK_UNAVAILABLE). */
   botCheck: "We couldn't confirm you're a person. Try again.",
-  /** #4 COUNTRY_REQUIRED: no country is known, so no code was sent. ⚠️ Not yet signed (Helm). */
+  /** #4 COUNTRY_REQUIRED: no country is known, so no code was sent. Signed by Helm on #1963 (Q4). */
   chooseCountry: "Choose your country to continue.",
   continueSignUp: "Continue sign-up",
   goToCourse: "Go to my course",
