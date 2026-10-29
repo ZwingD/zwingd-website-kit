@@ -205,3 +205,15 @@ test("restore opens the code step from the ticket cookie's read", () => {
 test("codeStepError keeps the fields", () => {
   assert.deepEqual(codeStepError({ reason: "WEBSITE_TERMS_REQUIRED", fields: ["acceptedDocuments"] }).fields, ["acceptedDocuments"]);
 });
+
+test("every PROOF_GONE reason after verify or pay sends the step back to the email step, the email kept", async () => {
+  const { PROOF_GONE_REASONS, codeStepReducer: reduce, initialCodeStep: init } = await import("../src/code-step.ts");
+  for (const reason of PROOF_GONE_REASONS) {
+    for (const step of ["verifying", "paying"] as const) {
+      const s = reduce({ ...init({ email: "buyer@example.org" }), step }, { type: "answered", answer: { kind: "payment-failed", reason } });
+      assert.equal(s.step, "email", `${reason} while ${step}`);
+      assert.equal(s.email, "buyer@example.org");
+      assert.equal(s.error?.reason, reason);
+    }
+  }
+});

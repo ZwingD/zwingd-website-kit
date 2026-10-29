@@ -247,6 +247,19 @@ test("CheckoutContinueButton: the read failed on load but works at the press: it
   await b.unmount();
 });
 
+test("CheckoutContinueButton: back from the app (pageshow), the button can be pressed again (U9a)", async () => {
+  const React = await import("react");
+  const b = await renderButton({ status: 200, body: { nonce: NONCE, continueUrl: `${APP}/session/checkout-continue` } });
+  await b.press();
+  await b.press();
+  assert.equal(b.submitted.length, 1, "no second press before the page is shown again");
+  await React.act(async () => { window.dispatchEvent(new window.Event("pageshow")); });
+  await b.press();
+  assert.equal(b.fetched.filter((f) => f.url === "/session/checkout-continue").length, 2);
+  assert.equal(b.submitted.length, 2);
+  await b.unmount();
+});
+
 test("CheckoutContinueButton: null draws nothing", async () => {
   const React = await import("react");
   const REACT_DOM_CLIENT = "react-dom/client";
@@ -261,4 +274,16 @@ test("CheckoutContinueButton: null draws nothing", async () => {
   assert.equal(container.innerHTML, "");
   await React.act(async () => root.unmount());
   container.remove();
+});
+
+test("AC 17: the v3.1 exports are gone from the package entry points (isNewAccountBuyer, appLinkHref, appSignInFromEnv)", async () => {
+  const client = (await import("../src/client.ts")) as Record<string, unknown>;
+  const main = (await import("../src/index.ts")) as Record<string, unknown>;
+  for (const [name, mod] of Object.entries({ client, main })) {
+    for (const gone of ["isNewAccountBuyer", "appLinkHref", "appSignInFromEnv"]) assert.equal(mod[gone], undefined, `${name}.${gone}`);
+  }
+  // `/server` imports next/headers, which only a Next runtime resolves: read its source instead.
+  const { readFile } = await import("node:fs/promises");
+  const serverSource = await readFile(new URL("../src/server.ts", import.meta.url), "utf8");
+  for (const gone of ["isNewAccountBuyer", "appLinkHref", "appSignInFromEnv"]) assert.ok(!serverSource.includes(gone), `server.${gone}`);
 });

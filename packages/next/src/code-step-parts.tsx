@@ -106,8 +106,9 @@ export function CheckoutContinueButton({ next, className, basePath, formToken, f
       pressing.current = false;
       setBusy(false);
     };
-    globalThis.addEventListener?.("pageshow", again);
-    return () => globalThis.removeEventListener?.("pageshow", again);
+    const target: Pick<Window, "addEventListener" | "removeEventListener"> | undefined = typeof window === "undefined" ? undefined : window;
+    target?.addEventListener("pageshow", again);
+    return () => target?.removeEventListener("pageshow", again);
   }, []);
 
   if (!next) return null;

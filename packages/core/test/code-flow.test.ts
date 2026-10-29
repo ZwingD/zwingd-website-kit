@@ -6,6 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { PROOF_GONE_REASONS } from "../src/code-step.ts";
 import { createWebsiteKit } from "../src/flows.ts";
 import { API, APP, cookieNamed, jar, ORIGIN, req, SECRET, TOKEN } from "./helpers.ts";
 
@@ -538,4 +539,123 @@ test("code-start waits for the 'code sent' report (serverless hosts drop a promi
     assert.equal(res.status, 200, outcome);
     assert.equal(reported, true, `the report finished before the answer (${outcome})`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Review (pr-test-analyzer): branches no test pinned before.
+// ---------------------------------------------------------------------------
+
+
+const refusedWith = (reason: string) => ({ status: 409, body: { error: "checkout_refused", reason } });
+const proofCookies = (setCookies: string[]) => setCookies.filter((c) => c.startsWith("__Host-zw_proof="));
+
+test("every PROOF_GONE reason drops the proof cookie: on code-pay's start, and on verify's re-quote and start (exactly one removing Set-Cookie)", async () => {
+  for (const reason of PROOF_GONE_REASONS) {
+    const pay = setup({ "checkout/start": refusedWith(reason) });
+    const paid = (await pay.kit.handle(post("/session/code-pay", { offer: OFFER, expectedTotalMinor: "7900" }, { "__Host-zw_proof": PROOF })))!;
+    assert.deepEqual(JSON.parse(paid.body!), { kind: "payment-failed", reason }, reason);
+    assert.match(cookieNamed(paid.setCookies, "__Host-zw_proof")!, /Max-Age=0/, reason);
+
+    for (const failing of ["checkout/quote", "checkout/start"] as const) {
+      const replies: Record<string, Reply> = { ...START_OK, "code/verify": { status: 200, body: VERIFIED }, "checkout/quote": { status: 200, body: QUOTE("9900") }, "checkout/start": { status: 200, body: STARTED } };
+      replies[failing] = refusedWith(reason);
+      const { kit } = setup(replies);
+      const { cookies } = await started(kit);
+      const res = (await kit.handle(post("/session/code-verify", { code: "123456", ...PURCHASE }, cookies)))!;
+      assert.deepEqual(JSON.parse(res.body!), { kind: "payment-failed", reason }, `${reason} on ${failing}`);
+      const proof = proofCookies(res.setCookies);
+      assert.equal(proof.length, 1, `${reason} on ${failing}: one proof Set-Cookie`);
+      assert.match(proof[0]!, /Max-Age=0/, `${reason} on ${failing}`);
+    }
+  }
+});
+
+test("code-pay: a purchase field in the wrong shape is 400 INVALID_REQUEST and nothing is started", async () => {
+  for (const change of [{ country: "IN" }, { couponCode: "x".repeat(65) }, { expectedTotalMinor: "49.00" }, { expectedCurrencyCode: "usd" }, { offer: "my-course" }, { paymentGateway: "stripe" }] as Record<string, string>[]) {
+    const { kit, calls } = setup({ "checkout/start": { status: 200, body: STARTED } });
+    const res = (await kit.handle(post("/session/code-pay", { offer: OFFER, expectedTotalMinor: "7900", ...change }, { "__Host-zw_proof": PROOF })))!;
+    assert.equal(res.status, 400, JSON.stringify(change));
+    assert.deepEqual(JSON.parse(res.body!), { reason: "INVALID_REQUEST" });
+    assert.equal(calls.filter((c) => c.call === "checkout/start").length, 0, JSON.stringify(change));
+  }
+});
+
+test("checkout-continue: a passing fault on the mint (network, 503) keeps the proof cookie; only CHECKOUT_PROOF_INVALID drops it", async () => {
+  for (const reply of ["network", { status: 503, body: { reason: "CHECKOUT_PROOF_UNAVAILABLE" } }] as Reply[]) {
+    const { kit } = setup({ "checkout-proof/continue": reply });
+    const res = (await kit.handle(post("/session/checkout-continue", {}, { "__Host-zw_proof": PROOF })))!;
+    assert.equal(res.status, 400);
+    assert.deepEqual(JSON.parse(res.body!), { signInUrl: `${APP}/` });
+    assert.equal(cookieNamed(res.setCookies, "__Host-zw_proof"), undefined, JSON.stringify(reply));
+  }
+});
+
+test("already owned and nothing owed: ALREADY_ENROLLED on start, alreadyEnrolled on the PRICE_CHANGED re-quote, a zero total settled at once", async () => {
+  const enrolled = setup({ "checkout/start": refusedWith("ALREADY_ENROLLED") });
+  const a = (await enrolled.kit.handle(post("/session/code-pay", { offer: OFFER, expectedTotalMinor: "7900" }, { "__Host-zw_proof": PROOF })))!;
+  assert.deepEqual(JSON.parse(a.body!), { kind: "already-owned" });
+
+  const requoted = setup({ "checkout/start": refusedWith("PRICE_CHANGED"), "checkout/quote": { status: 200, body: QUOTE("8900", true) } });
+  const b = (await requoted.kit.handle(post("/session/code-pay", { offer: OFFER, expectedTotalMinor: "7900" }, { "__Host-zw_proof": PROOF })))!;
+  assert.deepEqual(JSON.parse(b.body!), { kind: "already-owned" });
+
+  const free = setup({ "checkout/start": { status: 200, body: { ...STARTED, redirectUrl: null, paymentState: "PAID" } } });
+  const c = JSON.parse((await free.kit.handle(post("/session/code-pay", { offer: OFFER, expectedTotalMinor: "0" }, { "__Host-zw_proof": PROOF })))!.body!);
+  assert.equal(c.kind, "redirect");
+  assert.equal(c.url, `${ORIGIN}/checkout/return/${ORDER}`);
+  assert.equal(c.settled, true);
+
+  const paidEarlier = setup({ "checkout/start": { status: 200, body: { ...STARTED, paymentState: "PAID" } } });
+  const d = JSON.parse((await paidEarlier.kit.handle(post("/session/code-pay", { offer: OFFER, expectedTotalMinor: "7900" }, { "__Host-zw_proof": PROOF })))!.body!);
+  assert.equal(d.settled, true, "an earlier payment that turned out paid is settled");
+});
+
+test("code-start: BOT_CHECK_UNAVAILABLE passes through as 503 with its reason", async () => {
+  const { kit } = setup({ "code/start": { status: 503, body: { reason: "BOT_CHECK_UNAVAILABLE", message: "x" } } });
+  const res = (await kit.handle(post("/session/code-start", { email: "buyer@example.org" })))!;
+  assert.equal(res.status, 503);
+  assert.deepEqual(JSON.parse(res.body!), { reason: "BOT_CHECK_UNAVAILABLE" });
+});
+
+test("attribution is trimmed and cut to 200 characters before the start", async () => {
+  const { kit, calls } = setup({ "checkout/start": { status: 200, body: STARTED } });
+  await kit.handle(post("/session/code-pay", { offer: OFFER, expectedTotalMinor: "7900", utmSource: ` ${"s".repeat(300)} ` }, { "__Host-zw_proof": PROOF }));
+  assert.equal((calls.find((c) => c.call === "checkout/start")!.body.attribution as Record<string, string>).utmSource, "s".repeat(200));
+});
+
+test("AC 8 / 27: nothing the code step does writes the email, code, ticket, proof or nonce to the console", async () => {
+  const written: string[] = [];
+  const methods = ["log", "info", "warn", "error", "debug", "trace"] as const;
+  const saved = methods.map((m) => console[m]);
+  for (const m of methods) console[m] = (...args: unknown[]) => void written.push(args.map(String).join(" "));
+  try {
+    const { kit } = setup({
+      ...START_OK,
+      "code/verify": [{ status: 400, body: { reason: "WEBSITE_CODE_INVALID" } }, { status: 200, body: VERIFIED }],
+      "checkout/quote": { status: 200, body: QUOTE("7900") },
+      "checkout/start": [refusedWith("PRICE_CHANGED"), { status: 200, body: STARTED }],
+      "checkout-proof/context": { status: 200, body: { continueAs: "sign-up", proofExpiresInSeconds: 600 } },
+      "checkout-proof/continue": { status: 200, body: { nonce: NONCE, nonceExpiresInSeconds: 60, continueUrl: CONTINUE_URL } },
+    });
+    const { cookies } = await started(kit);
+    await kit.handle(post("/session/code-verify", { code: "000000", ...PURCHASE }, cookies));
+    await kit.handle(post("/session/code-verify", { code: "123456", ...PURCHASE }, cookies));
+    await kit.handle(post("/session/code-pay", { offer: OFFER, expectedTotalMinor: "7900" }, { "__Host-zw_proof": PROOF }));
+    await kit.checkoutContinueFor({ "__Host-zw_proof": PROOF });
+    await kit.handle(post("/session/checkout-continue", {}, { "__Host-zw_proof": PROOF }));
+  } finally {
+    methods.forEach((m, i) => (console[m] = saved[i]!));
+  }
+  const all = written.join("\n").toLowerCase();
+  for (const secret of ["buyer@example.org", "123456", "000000", TICKET.ticketId, PROOF, NONCE]) assert.ok(!all.includes(secret.toLowerCase()), `logged: ${secret}`);
+});
+
+test("code-resend on an expired ticket: a refused restart answers its own reason and wait (no new ticket)", async () => {
+  const { kit, setNow } = setup({ "code/start": [{ status: 200, body: TICKET }, { status: 429, body: { reason: "WEBSITE_CODE_RATE_LIMITED", retryAfterSeconds: 120 } }], "checkout/drop-off": { status: 202 } });
+  const { cookies } = await started(kit);
+  setNow(NOW + 11 * 60_000);
+  const res = (await kit.handle(post("/session/code-resend", {}, cookies)))!;
+  assert.equal(res.status, 429);
+  assert.deepEqual(JSON.parse(res.body!), { reason: "WEBSITE_CODE_RATE_LIMITED", retryAfterSeconds: 120 });
+  assert.equal(cookieNamed(res.setCookies, "__Host-zw_ticket"), undefined);
 });

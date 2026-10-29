@@ -160,13 +160,23 @@ test("paste of '123 456' fills six digits (no maxLength cuts it first); Tab is n
   assert.equal(input.getAttribute("maxlength"), null);
   assert.equal(input.getAttribute("autocomplete"), "one-time-code");
   assert.equal(input.getAttribute("inputmode"), "numeric");
-  await act(async () => { handle.current!.setCode("123 456"); });
+  // Through the input itself, as a paste lands: the input's own onChange cleans it.
+  const type = async (value: string) =>
+    act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new window.Event("input", { bubbles: true }) as unknown as Event);
+    });
+  await type("123 456");
   assert.equal(handle.current!.code, "123456");
-  await act(async () => { handle.current!.setCode("12 34 56 78"); });
+  assert.equal(input.value, "123456");
+  await type("12 34 56 78");
   assert.equal(handle.current!.code, "123456");
-  // One input and no keydown handler: Tab moves on like any other field.
+  assert.equal(input.value, "123456");
+  // One input, and a Tab on it is never held back: focus moves on like any other field.
   assert.equal(container.querySelectorAll(`input[name="code"]`).length, 1);
-  assert.equal(input.getAttribute("onkeydown"), null);
+  const tab = new window.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+  input.dispatchEvent(tab as unknown as Event);
+  assert.equal(tab.defaultPrevented, false);
   await unmount();
 });
 
@@ -370,5 +380,40 @@ test("a 403 that a fresh read does not cure is not retried again: the generic li
   await settle(act);
   assert.equal(server.sent.filter((x) => x.path === "/session/code-verify").length, 1, "the same value again would be refused again");
   assert.equal(handle.current!.state.error?.reason, "UNAVAILABLE");
+  await unmount();
+});
+
+test("a redirect answer whose url is not http(s) is never followed: the generic line, nothing stored", async () => {
+  for (const url of ["javascript:alert(1)", "/checkout/return/x"]) {
+    const server = fakeServer({ "code-verify": { status: 200, body: { ...REDIRECT, url } } });
+    const { act, handle, navigated, stored, unmount } = await mount(server);
+    await act(async () => { await handle.current!.sendCode("buyer@example.org"); });
+    await act(async () => { handle.current!.setCode("123456"); });
+    await act(async () => { await handle.current!.verify(); });
+    await settle(act);
+    assert.deepEqual(navigated, [], url);
+    assert.equal(stored.size, 0);
+    assert.equal(handle.current!.state.error?.reason, "UNAVAILABLE");
+    await unmount();
+  }
+});
+
+test("a failed 'Pay {amount}' is tied to the payment line (field 'payment'), and Pay can be pressed again", async () => {
+  const server = fakeServer({
+    "code-verify": { status: 200, body: { kind: "confirm-price", totalMinor: "7900", currencyCode: "USD", minorUnitExponent: 2 } },
+    "code-pay": [{ status: 200, body: { kind: "payment-failed", reason: "UNAVAILABLE" } }, { status: 200, body: REDIRECT }],
+  });
+  const { act, handle, navigated, unmount } = await mount(server);
+  await act(async () => { await handle.current!.sendCode("buyer@example.org"); });
+  await act(async () => { handle.current!.setCode("123456"); });
+  await act(async () => { await handle.current!.verify(); });
+  await settle(act);
+  await act(async () => { await handle.current!.pay(); });
+  await settle(act);
+  assert.equal(handle.current!.state.step, "pay-failed");
+  assert.equal(handle.current!.state.error?.field, "payment");
+  await act(async () => { await handle.current!.pay(); });
+  await settle(act);
+  assert.deepEqual(navigated, [REDIRECT.url]);
   await unmount();
 });
