@@ -15,7 +15,8 @@
  *     continue nonce then (never on a page load); the button then submits a
  *     hidden form POST with the nonce to the app's /session/checkout-continue.
  *     The nonce lives only in that handler's local variable and the form's
- *     body: no state, no storage, no URL, no log. The app still asks
+ *     body (the default submit removes the form once sent; a custom `submit`
+ *     should too): no state, no storage, no URL, no log. The app still asks
  *     "Continue as {email}" before signing in. Any failure opens the app's
  *     normal sign-in, including a form value that cannot be read.
  */
@@ -68,7 +69,7 @@ export interface CheckoutContinueButtonProps {
 
 const NONCE = /^[A-Za-z0-9_-]{16,512}$/;
 
-/** The app's continue route only (A3, A4): https, exactly this path, no query or fragment. */
+/** The app's continue route only (A3): https, exactly this path, no query or fragment. The host is the API's (A4). */
 function continueUrlOk(value: unknown): value is string {
   if (typeof value !== "string") return false;
   try {

@@ -92,9 +92,9 @@ export async function accountUrl(kit: WebsiteKit): Promise<string> {
 /**
  * v0.2.0, the thank-you page (checkout v3.2 §8 step 4): which button to show,
  * from a SERVER-side read of the proof context (`checkout-proof/context`):
- * `{ label: "Continue sign-up" | "Go to my course", action, continueAs }`, or
- * null when this browser holds no proof that is still good (show your usual
- * link to the course instead). Pass it to `<CheckoutContinueButton next={...} />`.
+ * `{ label: "Continue sign-up" | "Go to my course", action, continueAs, signInUrl }`,
+ * or null when this browser holds no proof that is still good, or the context
+ * read fails (an API fault): show your usual link to the course instead. Pass it to `<CheckoutContinueButton next={...} />`.
  * It never mints the continue nonce: only the press does (A3).
  */
 export async function getCheckoutContinue(kit: WebsiteKit): Promise<CheckoutContinue | null> {

@@ -46,7 +46,7 @@ export interface WebsiteKitConfigInput {
    * names), forwarded to the code calls as `buyerIp` (the code budget's
    * requester). Default `forwardedBuyerIp`: `x-real-ip`, else the LAST
    * `x-forwarded-for` hop (both set by the site's own proxy; never the first
-   * hop, which the browser controls). Behind more than one proxy, pass your own. Anything that is not an IP is ignored.
+   * hop, which the browser controls). Behind more than one proxy, pass your own. A value that is not an IPv4/IPv6 address counts as no IP: the code routes then answer 503 UNAVAILABLE (with insecureLocalCookies, 127.0.0.1 is used).
    */
   buyerIpFrom?: BuyerIpResolver;
   /**
@@ -161,7 +161,7 @@ export function ipOf(value: unknown): string | null {
 /**
  * The default `buyerIpFrom`: `x-real-ip`, else the LAST `x-forwarded-for` hop. Both are written by the site's own
  * proxy; the first hop is whatever the browser sent, so a caller could rotate it on every request and dodge the
- * per-requester code budget (spec v3.1 §4.4; PR #17 review). A site behind more than one proxy sets `buyerIpFrom`.
+ * per-requester code budget (spec v3.2 §4.4: the requester is buyerIp; PR #17 review). A site behind more than one proxy sets `buyerIpFrom`.
  */
 export function forwardedBuyerIp(headers: Record<string, string | undefined>): string | null {
   const real = ipOf(headers["x-real-ip"]);

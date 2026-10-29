@@ -63,7 +63,7 @@ The example site also reads `ZWINGD_COUNTRY_IDS`. That variable is the example's
 | `POST /session/checkout` | Member checkout: the member's "Buy now" (section 7). Served when you pass a checkout to the routes |
 | `GET /session/code-step` | v0.2.0. The code step's form value (`formToken`, sent as `csrf`) and the open step a reload resumes (`pending`) |
 | `POST /session/code-start` | v0.2.0. Sends the buyer a code (`email`, `offer?`, `botToken?`). Same-site POST with `csrf` |
-| `POST /session/code-resend` | v0.2.0. A new code on the same ticket. Same-site POST with `csrf` |
+| `POST /session/code-resend` | v0.2.0. A new code on the same ticket; once the ticket has expired, it starts again with the stored email (a new ticket). Same-site POST with `csrf` |
 | `POST /session/code-verify` | v0.2.0. Checks the code (`code`, `firstName?`, `lastName?`, `acceptedDocuments?` as JSON, and the purchase: `offer`, `expectedTotalMinor`, `expectedCurrencyCode`, `country?`, `couponCode?`, `paymentGateway?`, attribution). Keeps the proof server-side, re-quotes with it, and starts payment or answers the new price. Creates no account and no session. Same-site POST with `csrf` |
 | `POST /session/code-pay` | v0.2.0. "Pay {amount}" after the price changed: a start with the held proof at the shown total. Same-site POST with `csrf` |
 | `POST /session/checkout-continue` | v0.2.0. The thank-you button ("Continue sign-up" / "Go to my course"). Fetched by `CheckoutContinueButton` at the press: mints the one-time continue nonce and answers `{ nonce, continueUrl }` (or `400 { signInUrl }`). Same-site POST with `csrf` |
@@ -276,11 +276,11 @@ step.resend(); step.changeEmail();
 - **One verify per submit.** A send, resend, verify or pay in flight ignores another one, and `busy` is true while it runs.
 - **The order record.** Before the browser leaves for payment, the kit keeps `{ orderId, token, email: "", member: false, coursePath, expiresAt }` in `sessionStorage` under your `storageKey`, as member checkout does.
 - **Reload.** The open ticket lives in the HttpOnly `__Host-zw_ticket` cookie, so a reload after the mail app resumes the code step without a new code. The browser never sees the ticket.
-- **Drop-off.** With `offer`, the kit reports `code_sent` to the API. Fire-and-forget. Identity records "verified" itself.
+- **Drop-off.** With `offer`, the kit reports `code_sent` after a start. The start waits for it for at most 2 s, because a promise left running is dropped on serverless hosts. A failed report never fails the start. Identity records "verified" itself (B5).
 
 ### The thank-you page
 
-On the return page's **server**, `await getCheckoutContinue(kit)` (`@zwingd-ce/website-kit-next/server`) reads the proof context and answers the button: `{ label: "Continue sign-up" | "Go to my course", action, continueAs, signInUrl }`, or `null` when this browser holds no proof that is still good. Draw it with `<CheckoutContinueButton next={next} />` (client), or show your usual course link when it is `null`.
+On the return page's **server**, `await getCheckoutContinue(kit)` (`@zwingd-ce/website-kit-next/server`) reads the proof context and answers the button: `{ label: "Continue sign-up" | "Go to my course", action, continueAs, signInUrl }`, or `null` when this browser holds no proof that is still good, or the context read fails (an API fault). Draw it with `<CheckoutContinueButton next={next} />` (client), or show your usual course link when it is `null`.
 
 ```tsx
 // app/checkout/return/[orderId]/page.tsx (Server Component)
@@ -288,7 +288,7 @@ const next = await getCheckoutContinue(zwingd());
 return next ? <CheckoutContinueButton next={next} /> : <a href={courseUrl}>Go to my course</a>;
 ```
 
-One press on your website. The button POSTs (same-site, with `csrf`) to the kit's `/session/checkout-continue`, which mints the 60-second, single-use continue nonce at that moment, never on the page load, and answers `{ nonce, continueUrl }`. The button then submits a hidden form POST carrying the nonce to the app's `/session/checkout-continue`. The nonce stays in that press handler and the form's body: never in state, storage, an address or a log. The proof itself never leaves your server. The app then shows "Continue as {email}" and waits for its own press before signing in, which stops login CSRF. If the continue cannot be made (no proof, an expired one, any fault), the press opens the app's normal sign-in (`signInUrl`). The button needs JavaScript: it reads the form value in the browser, because the `SameSite=Strict` cookie is not sent on the return from the payment page.
+One press on your website. The button POSTs (same-site, with `csrf`) to the kit's `/session/checkout-continue`, which mints the 60-second, single-use continue nonce at that moment, never on the page load, and answers `{ nonce, continueUrl }`. The button then submits a hidden form POST carrying the nonce to the app's `/session/checkout-continue`. The nonce stays in that press handler and the form's body (the default submit removes the form once sent; a custom `submit` should too): never in state, storage, an address or a log. The proof itself never leaves your server. The app then shows "Continue as {email}" and waits for its own press before signing in, which stops login CSRF. If the continue cannot be made (no proof, an expired one, any fault), the press opens the app's normal sign-in (`signInUrl`). The button needs JavaScript: it reads the form value in the browser, because the `SameSite=Strict` cookie is not sent on the return from the payment page.
 
 - **A custom storefront** calls the same API routes from its own server: `POST /api/external/session-handover/code/start|resend|verify`, then `checkout/quote` and `checkout/start` with `checkoutProof` and `buyerIp` (never from a browser), and `checkout-proof/context` and `checkout-proof/continue` for the thank-you page, each with `realm`, `origin` and `Authorization: Bearer <secret>`.
 
@@ -300,7 +300,7 @@ One press on your website. The button POSTs (same-site, with `csrf`) to the kit'
 - Never send a price the page did not show. `expectedTotalMinor` is the member quote's `totalMinor`, unchanged.
 - Never start a hand-over on a page view. Only a click on "Log in" starts one.
 - Never show a sign-in form or collect a password on your website. The only code your website takes is the checkout code step (section 7a), through the kit's routes.
-- Never send the checkout proof or the continue nonce to page JavaScript, an address, storage, analytics or a log. The kit keeps the proof in an HttpOnly cookie and puts the nonce only in the body of a form POST.
+- Never send the checkout proof to page JavaScript, an address, storage, analytics or a log: the kit keeps it in an HttpOnly cookie. The continue nonce reaches only the thank-you button's press handler, which puts it in the body of a form POST. Never store it, log it or put it in an address.
 - Never mint the continue nonce on a page load. Only the buyer's press on the thank-you button does.
 
 ## What the kit does for you

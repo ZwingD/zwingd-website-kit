@@ -10,7 +10,8 @@
  *              code" can start again with the stored email once the code has
  *              expired; 1 hour;
  *   - proof:   v0.2.0, the verified-email proof from the code step (checkout
- *              v3.2 §4.3), `SameSite=Lax`, for `proofExpiresInSeconds`. Only
+ *              v3.2 §4.3), `SameSite=Lax`, Max-Age = `proofExpiresInSeconds` + 30 min (the
+ *              most the API's PAID extension adds, A7). Only
  *              the site's server reads it: it never reaches page JavaScript
  *              or an address.
  * All `__Host-` names, `HttpOnly`, `Secure`, `Path=/`. A removing `Set-Cookie`

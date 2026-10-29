@@ -91,7 +91,7 @@ test("code-start: one start call with the buyer's IP and the site secret; the br
   assert.match(cookieNamed(res.setCookies, "__Host-zw_proof")!, /Max-Age=0/);
 });
 
-test("code-start reports only the drop-off stage code_sent, fire-and-forget (B5: identity records verified)", async () => {
+test("code-start reports only the drop-off stage code_sent, awaited, and a failed report never fails the start (B5: identity records verified)", async () => {
   const { kit, calls } = setup({ "code/start": { status: 200, body: TICKET }, "checkout/drop-off": "network" });
   const { res } = await started(kit);
   assert.equal(res.status, 200);

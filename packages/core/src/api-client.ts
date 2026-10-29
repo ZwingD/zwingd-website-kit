@@ -292,7 +292,10 @@ export function isSessionToken(value: unknown): value is string {
 // Website email verification (checkout v3.2, spec §4) and the proof (§4.3, §6, A3)
 // ---------------------------------------------------------------------------
 
-/** The refusal reasons the code and proof calls answer (spec §4, §10b; contract "Refusal reasons"). */
+/**
+ * The API refusal reasons for the code, proof and proof-carrying checkout calls (spec §4, §5, §10b B1; contract
+ * "Refusal reasons"). The kit's own reasons (INVALID_REQUEST, UNAVAILABLE, STORAGE_UNAVAILABLE) are not in it.
+ */
 export const CODE_REASONS = [
   "WEBSITE_CODE_DISABLED",
   "WEBSITE_CODE_EMAIL_INVALID",
@@ -439,7 +442,10 @@ export async function proofContext(
   return { ok: true, body: { continueAs, proofExpiresInSeconds: life } };
 }
 
-/** The app's continue route (A3, A4): an https address whose path is exactly `/session/checkout-continue`. */
+/**
+ * The app's continue route (A3, A4): an https address whose path is exactly `/session/checkout-continue`. The host
+ * is the API's choice (A4: the canonical app domain or a verified custom domain); the kit does not check it.
+ */
 export const APP_CONTINUE_PATH = "/session/checkout-continue";
 
 function continueUrlOf(value: unknown, local: boolean): string | null {
@@ -480,7 +486,10 @@ export async function proofContinue(
  */
 export type DropOffStage = "code_sent";
 
-/** Spec §5 drop-off site leg. Fire-and-forget: the answer is ignored, and it never throws. */
+/**
+ * Spec §5 drop-off, the site's "code sent" leg. The caller awaits it (code-routes caps it at 2 s). The answer is
+ * ignored and it never throws (post() catches every fault), so a failed report never fails the start.
+ */
 export async function reportDropOff(
   config: WebsiteKitConfig,
   input: { email: string; offer: string; stage: DropOffStage },

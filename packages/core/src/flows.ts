@@ -161,7 +161,8 @@ export interface WebsiteKit extends MemberReader {
   /**
    * v0.2.0, server only: the thank-you button ("Continue sign-up" / "Go to my
    * course") from a server-side read of the proof context, or null when this
-   * browser holds no proof that is still good. Never mints a nonce.
+   * browser holds no proof that is still good, or the context read fails
+   * (an API fault). Never mints a nonce.
    */
   checkoutContinueFor(cookies: Record<string, string>): Promise<CheckoutContinue | null>;
   /** Route a request to any /session/* route above; null when the path is none of them. */

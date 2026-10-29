@@ -95,7 +95,7 @@ export interface CheckoutContinue {
 /**
  * What POST /session/checkout-continue answers the button's fetch: the
  * 60 s single-use nonce and the app's continue route (200), or the app's
- * normal sign-in (400). Never the proof.
+ * normal sign-in (400, past the same-site check; that refusal is a bare 403). Never the proof.
  */
 export type CheckoutContinueAnswer = { nonce: string; continueUrl: string } | { signInUrl: string };
 
@@ -164,10 +164,11 @@ function nameField(value: string | undefined): string | undefined {
 }
 
 /**
- * `acceptedDocuments` as the form's JSON: at most 10 items of `{type, version}`,
- * each 1-64 characters (the gateway refuses anything else with
- * `invalid_request`). A number version is sent as its string; an item without
- * both is dropped.
+ * `acceptedDocuments` as the form's JSON: at most the first 10 items are kept.
+ * An item whose type or version is missing or outside 1-64 characters is
+ * dropped here (the gateway would refuse it `invalid_request`); a number
+ * version is sent as its string. With none left, no `acceptedDocuments` is
+ * sent, and the API answers WEBSITE_TERMS_REQUIRED if it needs them.
  */
 function documentsOf(value: string | undefined): AcceptedDocument[] | undefined {
   if (typeof value !== "string" || value === "") return undefined;
@@ -460,7 +461,7 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     if (!t || t.x <= config.now()) return json(400, { reason: "WEBSITE_CODE_EXPIRED" } satisfies CodeStepRefusal);
     const form = req.form ?? {};
     const code = typeof form.code === "string" ? form.code.replace(/\D+/g, "") : "";
-    // No digits at all: the code's shape is wrong, so it isn't right (no guess is spent).
+    // No digits, or more than 12: the code's shape is wrong, so it isn't right (no guess is spent).
     if (!DIGITS.test(code)) return json(400, { reason: "WEBSITE_CODE_INVALID" } satisfies CodeStepRefusal);
     const purchase = purchaseOf(form, t.o);
     // Before the code is spent: a purchase the kit could not pay for would leave the buyer with a used code.
@@ -530,8 +531,9 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
    * The thank-you press (A3), fetched by `CheckoutContinueButton`. The nonce is
    * minted here, at the press, and answered as JSON to that one handler, which
    * POSTs it to `continueUrl` in a form at once and keeps it nowhere else. The
-   * proof never leaves the server. Anything wrong answers `signInUrl`, the
-   * app's normal sign-in (E10); nothing says why.
+   * proof never leaves the server. Past the same-site check (403), anything
+   * wrong answers 400 `{ signInUrl }`, the app's normal sign-in (E10); nothing
+   * says why.
    */
   async function continueRoute(req: RequestView): Promise<ResponseView> {
     if (req.method !== "POST") return methodNotAllowed("POST");

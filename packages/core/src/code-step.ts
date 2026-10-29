@@ -8,6 +8,9 @@
  *     └──failed──────┘              │ └──failed──────┘       ├─ already-owned ─► owned
  *     └──────── changeEmail ────────┘                        └─ payment-failed ► pay-failed ─pay─► paying
  *
+ * Also: a payment-failed whose reason means the proof is gone returns to email (the email kept); a failed pay
+ * goes to pay-failed; changeEmail also leaves pay-failed and confirm-price.
+ *
  * The code step creates no account and no session: a right code gives the
  * site's SERVER a verified-email proof (HttpOnly cookie), and the same request
  * re-quotes with it. An unchanged total goes straight to payment; a changed
@@ -17,8 +20,10 @@
  * invalid or expired code (stay, focus the code input), locked or
  * rate-limited (the wait), the resend cap (E5, its own line and the wait),
  * terms required (the tick box, recoverable), an invalid email (the email
- * input), anything else the generic line. A send, resend, verify or pay
- * already in flight ignores a second one (the double-submit guard).
+ * input), anything else the generic line. The reducer ignores a send, resend,
+ * verify or pay that its step does not allow. The one-call-at-a-time guard is
+ * the caller's own (useCodeStep's inFlight ref), since two clicks before a
+ * re-render both see the old state.
  */
 
 /** The step's copy, exactly as signed (spec §8a). A site may restyle it, never reword it. */
