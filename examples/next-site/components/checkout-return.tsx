@@ -5,7 +5,7 @@
 // that the token was kept for this order in this tab, never in the address.
 import { useEffect, useState } from "react";
 
-import { CheckoutContinueButton, CODE_STEP_COPY, type CheckoutContinue } from "@zwingd-ce/website-kit-next/client";
+import { CheckoutContinueButton, CODE_STEP_COPY, readCheckoutOrder, type CheckoutContinue } from "@zwingd-ce/website-kit-next/client";
 
 import { orderStorageKey } from "@/components/buy-now";
 
@@ -18,13 +18,7 @@ export function CheckoutReturn({ orderId, next, courseHref }: { orderId: string;
   const [found, setFound] = useState<boolean | null>(null);
 
   useEffect(() => {
-    try {
-      const raw = window.sessionStorage.getItem(orderStorageKey(orderId));
-      const record = raw ? (JSON.parse(raw) as { orderId?: unknown; token?: unknown }) : null;
-      setFound(record?.orderId === orderId && typeof record.token === "string");
-    } catch {
-      setFound(false);
-    }
+    setFound(readCheckoutOrder(orderId, { storageKey: orderStorageKey }) !== null);
   }, [orderId]);
 
   if (found === null) return <p>Checking your order…</p>;

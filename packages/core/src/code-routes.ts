@@ -57,7 +57,7 @@ import {
 } from "./api-client.ts";
 import { CHECKOUT_ATTRIBUTION_KEYS, CHECKOUT_RETURN_PATH } from "./checkout.ts";
 import type { CodeStepPayment, CodeStepRefusal, CodeStepTicket, PendingCodeStep } from "./code-step.ts";
-import { CODE_STEP_COPY, UNAVAILABLE_REASON } from "./code-step.ts";
+import { CODE_STEP_COPY, PROOF_GONE_REASONS, UNAVAILABLE_REASON } from "./code-step.ts";
 import { ipOf, type WebsiteKitConfig } from "./config.ts";
 import { clearCookie, serializeCookie, TICKET_COOKIE_MAX_AGE_S, type CookieNames } from "./cookies.ts";
 import type { RequestView, ResponseView } from "./flows.ts";
@@ -116,7 +116,7 @@ const PROOF_PAID_EXTENSION_S = 30 * 60;
 /** The "code sent" report's own cap: the step waits for it, so a slow intake never holds the buyer long. */
 const DROP_OFF_TIMEOUT_MS = 2_000;
 /** Refusals of a checkout call with a proof after which the proof is no good: the cookie is dropped. */
-const PROOF_GONE = new Set(["CHECKOUT_PROOF_INVALID", "CHECKOUT_PROOF_EMAIL_MISMATCH", "EMAIL_VERIFICATION_REQUIRED"]);
+const PROOF_GONE: ReadonlySet<string> = new Set(PROOF_GONE_REASONS);
 
 interface TicketCookie {
   t: string;
@@ -290,16 +290,30 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
   const malformed = (form: Record<string, string>, name: string, pattern: RegExp) =>
     typeof form[name] === "string" && form[name] !== "" && !pattern.test(form[name]!);
 
+  /** A purchase the kit can pay for: every field checked, nothing the page did not send in the right shape. */
+  interface Purchase {
+    offer: string;
+    expectedTotalMinor: string;
+    /** Required on verify (the A2 comparison); on pay, the API's start takes no currency, so it may be absent. */
+    expectedCurrencyCode: string | null;
+    couponCode?: string;
+    paymentGateway?: string;
+    country?: string;
+    attribution?: Record<string, string>;
+  }
+
   /**
    * The purchase the page posts with verify and pay: never a price it was not shown, never a return address.
-   * `bad` names a field the page sent in the wrong shape: refused before the code is spent, never dropped (a
-   * dropped country or coupon re-quotes another price and shows a false "member price").
+   * Null (the route answers INVALID_REQUEST) when a required field is missing or any field the page sent is in the
+   * wrong shape: refused before the code is spent, never dropped (a dropped country or coupon re-quotes another
+   * price and shows a false "member price").
    */
-  function purchaseOf(form: Record<string, string>, fallbackOffer: string | undefined) {
+  function purchaseOf(form: Record<string, string>, fallbackOffer: string | undefined, currency: "required" | "optional"): Purchase | null {
     const offer = typeof form.offer === "string" && OBJECT_ID.test(form.offer) ? form.offer : fallbackOffer;
     const expectedTotalMinor = typeof form.expectedTotalMinor === "string" && EXPECTED_TOTAL.test(form.expectedTotalMinor) ? form.expectedTotalMinor : null;
     // The currency of the shown total: a re-quote with the same number in another currency is not "unchanged" (A2).
     const expectedCurrencyCode = typeof form.expectedCurrencyCode === "string" && CURRENCY.test(form.expectedCurrencyCode) ? form.expectedCurrencyCode : null;
+    if (!offer || expectedTotalMinor === null || (currency === "required" && expectedCurrencyCode === null)) return null;
     const bad =
       malformed(form, "offer", OBJECT_ID) ||
       malformed(form, "expectedTotalMinor", EXPECTED_TOTAL) ||
@@ -307,6 +321,7 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
       malformed(form, "country", OBJECT_ID) ||
       malformed(form, "couponCode", COUPON) ||
       malformed(form, "paymentGateway", OBJECT_ID);
+    if (bad) return null;
     const couponCode = typeof form.couponCode === "string" && COUPON.test(form.couponCode) ? form.couponCode : undefined;
     const paymentGateway = typeof form.paymentGateway === "string" && OBJECT_ID.test(form.paymentGateway) ? form.paymentGateway : undefined;
     // The country the page priced `expectedTotalMinor` in (e.g. one the buyer picked), as a master-data id.
@@ -316,9 +331,16 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
       const value = form[key];
       if (typeof value === "string" && value.trim() !== "") attribution[key] = value.trim().slice(0, ATTRIBUTION_MAX);
     }
-    return { offer, expectedTotalMinor, expectedCurrencyCode, couponCode, paymentGateway, country, bad, attribution: Object.keys(attribution).length > 0 ? attribution : undefined };
+    return {
+      offer,
+      expectedTotalMinor,
+      expectedCurrencyCode,
+      ...(couponCode ? { couponCode } : {}),
+      ...(paymentGateway ? { paymentGateway } : {}),
+      ...(country ? { country } : {}),
+      ...(Object.keys(attribution).length > 0 ? { attribution } : {}),
+    };
   }
-  type Purchase = ReturnType<typeof purchaseOf> & { offer: string };
 
   /**
    * The country to quote and start in: the one the page priced the shown total
@@ -342,16 +364,16 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
   }
 
   /**
-   * A start with the proof at `expectedTotalMinor`. ONE start, never retried;
+   * A start with the proof at `p.expectedTotalMinor`. ONE start, never retried;
    * on PRICE_CHANGED the price is quoted again ONCE and shown (A2): nothing is
    * started at a price the buyer has not seen.
    */
-  async function startWithProof(buyer: { checkoutProof: string; buyerIp: string }, p: Purchase, expectedTotalMinor: string, country: string | undefined): Promise<CodeStepPayment> {
+  async function startWithProof(buyer: { checkoutProof: string; buyerIp: string }, p: Purchase, country: string | undefined): Promise<CodeStepPayment> {
     const quoteInput: MemberQuoteInput = { offer: p.offer, ...(p.couponCode ? { couponCode: p.couponCode } : {}), ...(country ? { visitorCountry: country } : {}) };
     const input: MemberStartInput = {
       ...quoteInput,
       ...(p.paymentGateway ? { paymentGateway: p.paymentGateway } : {}),
-      expectedTotalMinor,
+      expectedTotalMinor: p.expectedTotalMinor,
       // Always the site's own return page: never an address from the browser.
       returnUrl,
       ...(p.attribution ? { attribution: p.attribution } : {}),
@@ -390,10 +412,10 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     if (!quoted.ok) return failed(quoted.error, quoted.reason);
     const q = quoted.body;
     if (q.alreadyEnrolled) return { kind: "already-owned" };
-    if (p.expectedTotalMinor === null || q.totalMinor !== p.expectedTotalMinor || q.currencyCode !== p.expectedCurrencyCode) {
+    if (q.totalMinor !== p.expectedTotalMinor || q.currencyCode !== p.expectedCurrencyCode) {
       return { kind: "confirm-price", totalMinor: q.totalMinor, currencyCode: q.currencyCode, minorUnitExponent: q.minorUnitExponent };
     }
-    return startWithProof(buyer, p, q.totalMinor, country);
+    return startWithProof(buyer, p, country);
   }
 
   async function codeStep(req: RequestView): Promise<ResponseView> {
@@ -463,11 +485,9 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     const code = typeof form.code === "string" ? form.code.replace(/\D+/g, "") : "";
     // No digits, or more than 12: the code's shape is wrong, so it isn't right (no guess is spent).
     if (!DIGITS.test(code)) return json(400, { reason: "WEBSITE_CODE_INVALID" } satisfies CodeStepRefusal);
-    const purchase = purchaseOf(form, t.o);
+    const purchase = purchaseOf(form, t.o, "required");
     // Before the code is spent: a purchase the kit could not pay for would leave the buyer with a used code.
-    if (purchase.bad || !purchase.offer || purchase.expectedTotalMinor === null || purchase.expectedCurrencyCode === null) {
-      return json(400, { reason: "INVALID_REQUEST" } satisfies CodeStepRefusal);
-    }
+    if (!purchase) return json(400, { reason: "INVALID_REQUEST" } satisfies CodeStepRefusal);
     const buyerIp = buyerIpOf(req);
     if (!buyerIp) return json(503, { reason: UNAVAILABLE_REASON } satisfies CodeStepRefusal);
 
@@ -496,20 +516,20 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
       clearTicket(),
     ];
     const buyer = { checkoutProof: res.body.proof, buyerIp };
-    const answer = await payAfterVerify(buyer, purchase as Purchase, await countryFor(purchase as Purchase, req));
+    const answer = await payAfterVerify(buyer, purchase, await countryFor(purchase, req));
     return paymentAnswer(answer, setCookies);
   }
 
   async function payRoute(req: RequestView): Promise<ResponseView> {
     if (req.method !== "POST") return methodNotAllowed("POST");
     if (!sameSiteForm(req)) return forbidden();
-    const purchase = purchaseOf(req.form ?? {}, undefined);
-    if (purchase.bad || !purchase.offer || purchase.expectedTotalMinor === null) return json(400, { reason: "INVALID_REQUEST" } satisfies CodeStepRefusal);
+    const purchase = purchaseOf(req.form ?? {}, undefined, "optional");
+    if (!purchase) return json(400, { reason: "INVALID_REQUEST" } satisfies CodeStepRefusal);
     const proof = proofOf(req.cookies);
     if (!proof) return paymentAnswer({ kind: "payment-failed", reason: "CHECKOUT_PROOF_INVALID" });
     const buyerIp = buyerIpOf(req);
     if (!buyerIp) return json(503, { reason: UNAVAILABLE_REASON } satisfies CodeStepRefusal);
-    const answer = await startWithProof({ checkoutProof: proof, buyerIp }, purchase as Purchase, purchase.expectedTotalMinor, await countryFor(purchase as Purchase, req));
+    const answer = await startWithProof({ checkoutProof: proof, buyerIp }, purchase, await countryFor(purchase, req));
     return paymentAnswer(answer);
   }
 

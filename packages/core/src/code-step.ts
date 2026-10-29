@@ -26,6 +26,18 @@
  * re-render both see the old state.
  */
 
+import type { CodeReason } from "./api-client.ts";
+
+/** The kit's own reasons (never from the API): a purchase it refused, no answer, an order token it could not keep. */
+export const KIT_REASONS = Object.freeze(["INVALID_REQUEST", "UNAVAILABLE", "STORAGE_UNAVAILABLE"] as const);
+export type KitReason = (typeof KIT_REASONS)[number];
+
+/**
+ * A refusal reason the step can show: the API's (`CodeReason`, and the checkout start's own), the kit's, or one a
+ * newer API adds (`string & {}` keeps it open while literals still autocomplete).
+ */
+export type CodeStepReason = CodeReason | KitReason | "PRICE_CHANGED" | "ALREADY_ENROLLED" | "HOSTED_GUEST_INVALID" | (string & {});
+
 /** The step's copy, exactly as signed (spec §8a). A site may restyle it, never reword it. */
 export const CODE_STEP_COPY = Object.freeze({
   heading: "Check your email",
@@ -66,7 +78,7 @@ export type CodeStepField = "email" | "code" | "terms" | "payment";
 
 export interface CodeStepError {
   /** The API's reason (`WEBSITE_CODE_INVALID`, ...), or `UNAVAILABLE` when it could not answer. */
-  reason: string;
+  reason: CodeStepReason;
   /** The line to show (spec §8a). For `terms` it is the tick box's own line: show the tick box. */
   message: string;
   field: CodeStepField;
@@ -133,11 +145,11 @@ export type CodeStepPayment =
   | ({ kind: "confirm-price" } & CodeStepPrice)
   | { kind: "already-owned"; settled?: true }
   /** The code was right (or the proof is held), but payment could not start. */
-  | { kind: "payment-failed"; reason: string };
+  | { kind: "payment-failed"; reason: CodeStepReason };
 
 /** A refusal as the kit's code routes answer it to the browser. */
 export interface CodeStepRefusal {
-  reason: string;
+  reason: CodeStepReason;
   retryAfterSeconds?: number;
   fields?: string[];
 }
@@ -157,15 +169,16 @@ export type CodeStepAction =
   | { type: "verify" }
   | { type: "pay" }
   | { type: "answered"; answer: CodeStepPayment }
-  | { type: "failed"; refusal: CodeStepRefusal; now?: number }
+  /** `now` is required: a resend refusal holds "Send a new code" for its wait from it (E5). */
+  | { type: "failed"; refusal: CodeStepRefusal; now: number }
   | { type: "terms"; accepted: boolean }
   | { type: "changeEmail" }
   | { type: "restore"; pending: PendingCodeStep; now: number };
 
-export const UNAVAILABLE_REASON = "UNAVAILABLE";
+export const UNAVAILABLE_REASON = "UNAVAILABLE" satisfies KitReason;
 
-/** Reasons after which the proof is gone: the buyer verifies again from the email step. */
-export const PROOF_GONE_REASONS: readonly string[] = Object.freeze([
+/** Reasons after which the proof is gone: the buyer verifies again from the email step. The kit's server drops the proof cookie on the same list. */
+export const PROOF_GONE_REASONS: readonly CodeReason[] = Object.freeze<CodeReason[]>([
   "CHECKOUT_PROOF_INVALID",
   "CHECKOUT_PROOF_EMAIL_MISMATCH",
   "EMAIL_VERIFICATION_REQUIRED",
@@ -274,7 +287,7 @@ export function codeStepReducer(state: CodeStepState, action: CodeStepAction): C
         return { ...state, step: "confirm-price", error: null, price: { totalMinor: a.totalMinor, currencyCode: a.currencyCode, minorUnitExponent: a.minorUnitExponent } };
       }
       // payment-failed: the proof is gone → verify again from the email step (the email is kept).
-      if (PROOF_GONE_REASONS.includes(a.reason)) {
+      if ((PROOF_GONE_REASONS as readonly string[]).includes(a.reason)) {
         return { ...initialCodeStep({ email: state.email, termsRequired: state.termsRequired }), error: codeStepError({ reason: a.reason }, "start") };
       }
       return { ...state, step: "pay-failed", error: codeStepError({ reason: a.reason }, "pay") };
@@ -292,7 +305,7 @@ export function codeStepReducer(state: CodeStepState, action: CodeStepAction): C
         next.focusTerms = state.focusTerms + 1;
       }
       // E5: the resend cap holds "Send a new code" for the wait.
-      if (resending && error.retryAfterSeconds !== null && action.now !== undefined) {
+      if (resending && error.retryAfterSeconds !== null) {
         next.resendAvailableAt = action.now + error.retryAfterSeconds * 1000;
         next.countdownFrom = error.retryAfterSeconds;
       }

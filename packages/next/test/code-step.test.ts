@@ -70,7 +70,7 @@ function fakeServer(
   return { sent, fetch: fetchImpl };
 }
 
-async function mount(server: ReturnType<typeof fakeServer>, extra: { terms?: typeof TERMS; clock?: { now: number }; country?: string } = {}) {
+async function mount(server: ReturnType<typeof fakeServer>, extra: { terms?: typeof TERMS; clock?: { now: number }; country?: string; termsLater?: { current: typeof TERMS | undefined; set?: () => void } } = {}) {
   const React = await import("react");
   const { act } = React;
   const REACT_DOM_CLIENT = "react-dom/client";
@@ -82,6 +82,9 @@ async function mount(server: ReturnType<typeof fakeServer>, extra: { terms?: typ
   const stored = new Map<string, string>();
   const clock = extra.clock ?? { now: NOW };
   function Probe() {
+    const [, rerender] = React.useState(0);
+    if (extra.termsLater) extra.termsLater.set = () => rerender((n) => n + 1);
+    const lateTerms = extra.termsLater?.current;
     const step = useCodeStep({
       fetch: server.fetch,
       now: () => clock.now,
@@ -91,7 +94,7 @@ async function mount(server: ReturnType<typeof fakeServer>, extra: { terms?: typ
       storageKey: (id) => `example:checkout:order:${id}`,
       storage: { setItem: (k, v) => void stored.set(k, v) },
       navigate: (url) => void navigated.push(url),
-      ...(extra.terms ? { terms: extra.terms } : {}),
+      ...(extra.terms ? { terms: extra.terms } : lateTerms ? { terms: lateTerms } : {}),
       ...(extra.country ? { country: extra.country } : {}),
     });
     handle.current = step;
@@ -412,8 +415,37 @@ test("a failed 'Pay {amount}' is tied to the payment line (field 'payment'), and
   await settle(act);
   assert.equal(handle.current!.state.step, "pay-failed");
   assert.equal(handle.current!.state.error?.field, "payment");
+  assert.equal(handle.current!.payLabel, "Pay $79.00", "the retry still says what it pays");
   await act(async () => { await handle.current!.pay(); });
   await settle(act);
   assert.deepEqual(navigated, [REDIRECT.url]);
+  await unmount();
+});
+
+test("a 200 from code-start that is not a ticket (a proxy page, a version skew) is no answer: the step stays usable", async () => {
+  const server = fakeServer({ "code-start": [{ status: 200, body: { codeLength: "six" } }, { status: 200, body: TICKET }] });
+  const { act, handle, unmount } = await mount(server);
+  await act(async () => { await handle.current!.sendCode("buyer@example.org"); });
+  assert.equal(handle.current!.state.step, "email");
+  assert.equal(handle.current!.state.error?.reason, "UNAVAILABLE");
+  await act(async () => { await handle.current!.sendCode("buyer@example.org"); });
+  assert.equal(handle.current!.state.step, "code");
+  await act(async () => { handle.current!.setCode("123456"); });
+  assert.equal(handle.current!.code, "123456", "the code length is a real one");
+  await unmount();
+});
+
+test("terms that arrive after the first render (loaded later) still show the tick box and still guard Continue", async () => {
+  const server = fakeServer({ "code-verify": { status: 200, body: REDIRECT } });
+  const late: { current: typeof TERMS | undefined; set?: () => void } = { current: undefined };
+  const { act, handle, unmount } = await mount(server, { termsLater: late });
+  assert.equal(handle.current!.state.termsRequired, false);
+  await act(async () => { late.current = TERMS; late.set!(); });
+  assert.equal(handle.current!.state.termsRequired, true);
+  await act(async () => { await handle.current!.sendCode("buyer@example.org"); });
+  await act(async () => { handle.current!.setCode("123456"); });
+  await act(async () => { await handle.current!.verify(); });
+  assert.equal(handle.current!.state.error?.reason, "WEBSITE_TERMS_REQUIRED");
+  assert.equal(server.sent.filter((x) => x.path === "/session/code-verify").length, 0, "no guess spent");
   await unmount();
 });

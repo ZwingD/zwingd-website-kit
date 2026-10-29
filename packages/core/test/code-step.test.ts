@@ -83,7 +83,7 @@ test("each reason's message, the input it belongs to, and focus only for invalid
   ];
   for (const [reason, retryAfterSeconds, message, field, focus] of cases) {
     const before = codeStepReducer(onCode(), { type: "verify" });
-    const after = codeStepReducer(before, { type: "failed", refusal: { reason, ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }) } });
+    const after = codeStepReducer(before, { type: "failed", refusal: { reason, ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }) }, now: NOW });
     assert.equal(after.step, "code", reason);
     assert.equal(after.error?.message, message, reason);
     assert.equal(after.error?.field, field, reason);
@@ -102,7 +102,7 @@ test("E5: WEBSITE_CODE_LOCKED answering a resend is the resend cap line, and hol
 
 test("an invalid email at start is 'Enter a valid email address.' on the email input", () => {
   const sending = codeStepReducer(initialCodeStep(), { type: "send", email: "nope" });
-  const s = codeStepReducer(sending, { type: "failed", refusal: { reason: "WEBSITE_CODE_EMAIL_INVALID" } });
+  const s = codeStepReducer(sending, { type: "failed", refusal: { reason: "WEBSITE_CODE_EMAIL_INVALID" }, now: NOW });
   assert.equal(s.step, "email");
   assert.equal(s.error?.message, "Enter a valid email address.");
   assert.equal(s.error?.field, "email");
@@ -110,7 +110,7 @@ test("an invalid email at start is 'Enter a valid email address.' on the email i
 
 test("a failed send goes back to the email step with the reason, tied to the email input", () => {
   const sending = codeStepReducer(initialCodeStep(), { type: "send", email: "a@b.co" });
-  const s = codeStepReducer(sending, { type: "failed", refusal: { reason: "BOT_CHECK_FAILED" } });
+  const s = codeStepReducer(sending, { type: "failed", refusal: { reason: "BOT_CHECK_FAILED" }, now: NOW });
   assert.equal(s.step, "email");
   assert.equal(s.error?.reason, "BOT_CHECK_FAILED");
   assert.equal(s.error?.message, CODE_STEP_COPY.otherError);
@@ -119,7 +119,7 @@ test("a failed send goes back to the email step with the reason, tied to the ema
 
 test("terms required is recoverable: the step stays, the tick box shows and gets focus, ticking clears the error", () => {
   const verifying = codeStepReducer(onCode(), { type: "verify" });
-  const s = codeStepReducer(verifying, { type: "failed", refusal: { reason: "WEBSITE_TERMS_REQUIRED", fields: ["acceptedDocuments"] } });
+  const s = codeStepReducer(verifying, { type: "failed", refusal: { reason: "WEBSITE_TERMS_REQUIRED", fields: ["acceptedDocuments"] }, now: NOW });
   assert.equal(s.step, "code");
   assert.equal(s.termsRequired, true);
   assert.equal(s.error?.field, "terms");

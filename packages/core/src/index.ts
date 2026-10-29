@@ -51,6 +51,7 @@ export {
   fillCopy,
   formatAmount,
   initialCodeStep,
+  KIT_REASONS,
   normalizeCode,
   PROOF_GONE_REASONS,
   resendCountdown,
@@ -64,12 +65,14 @@ export type {
   CodeStepName,
   CodeStepPayment,
   CodeStepPrice,
+  CodeStepReason,
   CodeStepRefusal,
   CodeStepState,
   CodeStepTicket,
+  KitReason,
   PendingCodeStep,
 } from "./code-step.ts";
 export { APP_CONTINUE_PATH, CODE_CALL_TIMEOUT_MS, CODE_REASONS } from "./api-client.ts";
 export type { AcceptedDocument, CodeReason, ContinueAs } from "./api-client.ts";
-export { storeCheckoutOrder } from "./browser.ts";
-export type { StoredVerifiedCheckout } from "./browser.ts";
+export { readCheckoutOrder, storeCheckoutOrder } from "./browser.ts";
+export type { StoredCheckout, StoredVerifiedCheckout } from "./browser.ts";

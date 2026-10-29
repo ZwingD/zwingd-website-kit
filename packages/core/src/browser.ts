@@ -95,6 +95,33 @@ export function storeCheckoutOrder(
   }
 }
 
+/** Either record a return page may find: a member's order, or a verified buyer's from the code step. */
+export type StoredCheckout = StoredMemberCheckout | StoredVerifiedCheckout;
+
+/**
+ * The return page's read of the order record `storeCheckoutOrder` kept for `orderId` in this tab, checked; null
+ * when there is none, it is for another order, or it is not the kit's shape (no storage, another tab, edited).
+ */
+export function readCheckoutOrder(
+  orderId: string,
+  options: { storageKey: (orderId: string) => string; storage?: { getItem(key: string): string | null } | null },
+): StoredCheckout | null {
+  try {
+    const storage =
+      options.storage === undefined ? ((globalThis as { sessionStorage?: { getItem(key: string): string | null } }).sessionStorage ?? null) : options.storage;
+    const raw = storage?.getItem(options.storageKey(orderId));
+    if (!raw) return null;
+    const r = JSON.parse(raw) as Record<string, unknown> | null;
+    if (!r || r.orderId !== orderId || typeof r.token !== "string" || r.token === "" || typeof r.member !== "boolean") return null;
+    const coursePath = typeof r.coursePath === "string" ? r.coursePath : null;
+    const expiresAt = typeof r.expiresAt === "string" ? r.expiresAt : null;
+    const base = { orderId, token: r.token, email: "" as const, coursePath, expiresAt };
+    return r.member ? { ...base, member: true } : { ...base, member: false };
+  } catch {
+    return null;
+  }
+}
+
 const unavailable = (): StartMemberCheckoutResult => ({ kind: "fallback", reason: "unavailable" });
 
 function defaultStorage(): CheckoutStorage | null {

@@ -204,22 +204,49 @@ export function createCodeStepClient(options: { basePath?: string; fetch?: typeo
     }
   }
 
+  /** A 200 that is not a ticket (a proxy page, a version skew) would break the step: it reads as no answer. */
+  const ticketOnly = (res: Answer<unknown>): Answer<CodeStepTicket> => (!res.ok ? res : isTicket(res.body) ? { ok: true, body: res.body } : unavailable());
+
   return {
     async read(): Promise<CodeStepRead | null> {
       try {
         const res = await doFetch(`${base}/code-step`, { credentials: "same-origin", headers: { Accept: "application/json" }, cache: "no-store" });
         if (!res.ok) return null;
         const body = (await res.json()) as CodeStepRead;
-        return typeof body?.formToken === "string" ? body : null;
+        if (typeof body?.formToken !== "string") return null;
+        // An open step the hook cannot run on is not resumed: the form value still counts.
+        return { formToken: body.formToken, pending: isPending(body.pending) ? body.pending : null };
       } catch {
         return null;
       }
     },
-    start: (form: Record<string, string>) => postForm<CodeStepTicket>("code-start", form),
-    resend: (form: Record<string, string>) => postForm<CodeStepTicket>("code-resend", form),
+    start: async (form: Record<string, string>): Promise<Answer<CodeStepTicket>> => ticketOnly(await postForm<unknown>("code-start", form)),
+    resend: async (form: Record<string, string>): Promise<Answer<CodeStepTicket>> => ticketOnly(await postForm<unknown>("code-resend", form)),
     verify: (form: Record<string, string>) => postForm<CodeStepPayment>("code-verify", form),
     pay: (form: Record<string, string>) => postForm<CodeStepPayment>("code-pay", form),
   };
+}
+
+const isTime = (v: unknown): v is string => typeof v === "string" && !Number.isNaN(Date.parse(v));
+
+/** A ticket answer the step can run on: a code length of 4-12, a positive life, a real resend time. */
+function isTicket(value: unknown): value is CodeStepTicket {
+  const v = value as Record<string, unknown> | null;
+  return (
+    !!v &&
+    typeof v === "object" &&
+    Number.isInteger(v.codeLength) &&
+    (v.codeLength as number) >= 4 &&
+    (v.codeLength as number) <= 12 &&
+    typeof v.codeExpiresInSeconds === "number" &&
+    v.codeExpiresInSeconds > 0 &&
+    isTime(v.resendAvailableAt)
+  );
+}
+
+function isPending(value: unknown): boolean {
+  const v = value as Record<string, unknown> | null;
+  return !!v && typeof v === "object" && typeof v.email === "string" && Number.isInteger(v.codeLength) && isTime(v.codeExpiresAt) && isTime(v.resendAvailableAt);
 }
 
 function isPayment(value: unknown): value is CodeStepPayment {
@@ -233,8 +260,10 @@ function isPayment(value: unknown): value is CodeStepPayment {
 
 export function useCodeStep(options: UseCodeStepOptions): CodeStep {
   const now = options.now ?? Date.now;
-  const termsRequired = (options.terms?.length ?? 0) > 0;
-  const [state, dispatch] = useReducer(codeStepReducer, { email: options.initialEmail ?? "", termsRequired }, initialCodeStep);
+  // Live, not only at mount: a site often loads the workspace's legal documents after the first render.
+  const termsGiven = (options.terms?.length ?? 0) > 0;
+  const [reduced, dispatch] = useReducer(codeStepReducer, { email: options.initialEmail ?? "", termsRequired: termsGiven }, initialCodeStep);
+  const state: CodeStepState = termsGiven && !reduced.termsRequired ? { ...reduced, termsRequired: true } : reduced;
   const [code, setCodeValue] = useState("");
   const [clock, setClock] = useState(() => now());
   const codeInputRef = useRef<HTMLInputElement | null>(null);
@@ -390,7 +419,7 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
             ...(extras.botToken ? { botToken: extras.botToken } : {}),
           }),
         );
-        dispatch(res.ok ? { type: "sent", ticket: res.body, now: now() } : { type: "failed", refusal: res.refusal });
+        dispatch(res.ok ? { type: "sent", ticket: res.body, now: now() } : { type: "failed", refusal: res.refusal, now: now() });
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -421,7 +450,7 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
         dispatch({ type: "verify" });
         const o = optionsRef.current;
         // Terms required and not ticked: say so here, without spending a guess.
-        if (s.termsRequired && !s.termsAccepted) return dispatch({ type: "failed", refusal: { reason: "WEBSITE_TERMS_REQUIRED" } });
+        if (s.termsRequired && !s.termsAccepted) return dispatch({ type: "failed", refusal: { reason: "WEBSITE_TERMS_REQUIRED" }, now: now() });
         const docs = s.termsAccepted ? (o.terms ?? []) : [];
         const res = await withFormToken((csrf) =>
           client.verify({
@@ -465,7 +494,9 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
   const setCode = useCallback((value: string) => setCodeValue(normalizeCode(value, stateRef.current.codeLength)), []);
 
   const countdown = resendCountdown(state, clock);
-  const amount = state.step === "confirm-price" && state.price ? (options.formatAmount ?? ((p: CodeStepPrice) => formatAmount(p)))(state.price) : null;
+  // Also after a failed "Pay {amount}": the retry still pays that price, so the page can still say it.
+  const amount =
+    (state.step === "confirm-price" || state.step === "pay-failed") && state.price ? (options.formatAmount ?? ((p: CodeStepPrice) => formatAmount(p)))(state.price) : null;
   const err = state.error;
   const describedBy = (...list: (string | false | undefined)[]) => list.filter(Boolean).join(" ") || undefined;
 

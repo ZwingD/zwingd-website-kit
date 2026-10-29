@@ -319,7 +319,8 @@ export const CODE_CALL_TIMEOUT_MS = 10_000;
 /** A code call's refusal: the API's `reason` when it has the standard shape, else a v1 word. */
 export type CodeResult<T> =
   | { ok: true; body: T }
-  | { ok: false; error: CallFailure | "refused" | "login_required"; reason?: string; retryAfterSeconds?: number; fields?: string[]; status?: number };
+  | { ok: false; error: "refused"; reason: string; retryAfterSeconds?: number; fields?: string[]; status?: number }
+  | { ok: false; error: CallFailure | "login_required"; status?: number };
 
 export interface CodeTicket {
   ticketId: string;
