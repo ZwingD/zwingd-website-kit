@@ -56,7 +56,7 @@ test("POST /session/code-start then /session/code-verify: proof cookie only (no 
   assert.equal(started.status, 200);
   const ticket = started.headers.getSetCookie().find((c) => c.startsWith("__Host-zw_ticket="))!.split(";")[0]!;
 
-  const verified = await routes.POST(form("/session/code-verify", `csrf=${CSRF}&code=123+456&offer=${OFFER}&expectedTotalMinor=9900`, `__Host-zw_csrf=${CSRF}; ${ticket}`));
+  const verified = await routes.POST(form("/session/code-verify", `csrf=${CSRF}&code=123+456&offer=${OFFER}&expectedTotalMinor=9900&expectedCurrencyCode=USD`, `__Host-zw_csrf=${CSRF}; ${ticket}`));
   assert.equal(verified.status, 200);
   const text = await verified.text();
   assert.equal(JSON.parse(text).kind, "redirect");

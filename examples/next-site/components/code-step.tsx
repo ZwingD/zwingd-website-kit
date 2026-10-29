@@ -16,8 +16,11 @@ import { OwnedCourse } from "@/components/owned-course";
 
 export function CodeStep(props: {
   offer: string;
-  /** The guest total the page showed (minor units). */
+  /** The guest total the page showed (minor units), and its currency. */
   expectedTotalMinor: string;
+  expectedCurrencyCode: string;
+  /** The master-data country id that total was priced in (the code step needs one: this or the kit's visitorCountry). */
+  country?: string | null;
   courseCode: string | null;
   /** The workspace's legal documents when it requires terms, with the page that shows them. */
   terms?: { documents: AcceptedDocument[]; url: string };
@@ -25,6 +28,8 @@ export function CodeStep(props: {
   const step = useCodeStep({
     offer: props.offer,
     expectedTotalMinor: props.expectedTotalMinor,
+    expectedCurrencyCode: props.expectedCurrencyCode,
+    country: props.country ?? null,
     storageKey: orderStorageKey,
     coursePath: typeof window === "undefined" ? null : window.location.pathname,
     ...(props.terms ? { terms: props.terms.documents } : {}),

@@ -221,7 +221,7 @@ test("E5: the resend cap passes WEBSITE_CODE_LOCKED and its wait on", async () =
   assert.deepEqual(JSON.parse(res.body!), { reason: "WEBSITE_CODE_LOCKED", retryAfterSeconds: 900 });
 });
 
-const PURCHASE = { offer: OFFER, expectedTotalMinor: "9900", paymentGateway: GATEWAY, utmSource: "news" };
+const PURCHASE = { offer: OFFER, expectedTotalMinor: "9900", expectedCurrencyCode: "USD", paymentGateway: GATEWAY, utmSource: "news" };
 
 test("code-verify, total unchanged: proof cookie (HttpOnly), NO session, re-quote and start with checkoutProof + buyerIp", async () => {
   const { kit, calls } = setup(
@@ -292,9 +292,9 @@ test("country: the one the page priced in (picked ≠ geo) is quoted and started
   assert.equal(calls.find((c) => c.call === "checkout/start")!.body.visitorCountry, PICKED);
 });
 
-test("country: none posted (or not an id) falls back to the kit's visitorCountry; neither gives none", async () => {
+test("country: none posted falls back to the kit's visitorCountry; neither gives none", async () => {
   const replies = { ...START_OK, "code/verify": { status: 200, body: VERIFIED }, "checkout/quote": { status: 200, body: QUOTE("9900") }, "checkout/start": { status: 200, body: STARTED } };
-  for (const form of [{}, { country: "IN" }] as Record<string, string>[]) {
+  for (const form of [{}, { country: "" }] as Record<string, string>[]) {
     const { kit, calls } = setup(replies, { visitorCountry: () => COUNTRY });
     const { cookies } = await started(kit);
     await kit.handle(post("/session/code-verify", { code: "123456", ...PURCHASE, ...form }, cookies));
@@ -406,7 +406,7 @@ test("code-verify: an expired ticket is WEBSITE_CODE_EXPIRED and the ticket (wit
 test("code-verify: terms required passes the fields on", async () => {
   const { kit } = setup({ ...START_OK, "code/verify": { status: 400, body: { statusCode: 400, reason: "WEBSITE_TERMS_REQUIRED", message: "x", fields: ["acceptedDocuments"] } } });
   const { cookies } = await started(kit);
-  const res = (await kit.handle(post("/session/code-verify", { code: "123456" }, cookies)))!;
+  const res = (await kit.handle(post("/session/code-verify", { code: "123456", ...PURCHASE }, cookies)))!;
   assert.deepEqual(JSON.parse(res.body!), { reason: "WEBSITE_TERMS_REQUIRED", fields: ["acceptedDocuments"] });
 });
 
@@ -486,4 +486,56 @@ test("end also clears the ticket and proof cookies", async () => {
   assert.equal(res.status, 303);
   assert.match(cookieNamed(res.setCookies, "__Host-zw_proof")!, /Max-Age=0/);
   assert.match(cookieNamed(res.setCookies, "__Host-zw_ticket")!, /Max-Age=0/);
+});
+
+test("code-verify: a purchase the kit could not pay for is 400 INVALID_REQUEST BEFORE the code is spent (nothing dropped silently)", async () => {
+  const replies = { ...START_OK, "code/verify": { status: 200, body: VERIFIED }, "checkout/quote": { status: 200, body: QUOTE("9900") }, "checkout/start": { status: 200, body: STARTED } };
+  const cases: Record<string, string | undefined>[] = [
+    { country: "IN" },
+    { couponCode: "x".repeat(65) },
+    { expectedTotalMinor: "49.00" },
+    { expectedTotalMinor: undefined },
+    { expectedCurrencyCode: "usd" },
+    { expectedCurrencyCode: undefined },
+    { offer: "my-course" },
+    { paymentGateway: "stripe" },
+  ];
+  for (const change of cases) {
+    const { kit, calls } = setup(replies);
+    const { cookies } = await started(kit);
+    const form: Record<string, string> = { code: "123456", ...PURCHASE };
+    for (const [k, v] of Object.entries(change)) if (v === undefined) delete form[k]; else form[k] = v;
+    const res = (await kit.handle(post("/session/code-verify", form, cookies)))!;
+    assert.equal(res.status, 400, JSON.stringify(change));
+    assert.deepEqual(JSON.parse(res.body!), { reason: "INVALID_REQUEST" });
+    assert.equal(calls.filter((c) => c.call === "code/verify").length, 0, `no code spent: ${JSON.stringify(change)}`);
+    assert.equal(cookieNamed(res.setCookies, "__Host-zw_proof"), undefined);
+  }
+});
+
+test("A2: the same number in ANOTHER currency is a changed price: confirm-price, and NO start", async () => {
+  const gbp = { ...QUOTE("9900"), currencyCode: "GBP" };
+  const { kit, calls } = setup({ ...START_OK, "code/verify": { status: 200, body: VERIFIED }, "checkout/quote": { status: 200, body: gbp }, "checkout/start": { status: 200, body: STARTED } });
+  const { cookies } = await started(kit);
+  const res = (await kit.handle(post("/session/code-verify", { code: "123456", ...PURCHASE }, cookies)))!;
+  assert.deepEqual(JSON.parse(res.body!), { kind: "confirm-price", totalMinor: "9900", currencyCode: "GBP", minorUnitExponent: 2 });
+  assert.equal(calls.filter((c) => c.call === "checkout/start").length, 0);
+});
+
+test("code-start waits for the 'code sent' report (serverless hosts drop a promise left running), and a failed report never fails the start", async () => {
+  for (const outcome of ["answered", "refused", "network"] as const) {
+    let reported = false;
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const call = String(input).split("/session-handover/")[1];
+      if (call === "code/start") return new Response(JSON.stringify(TICKET), { status: 200, headers: { "Content-Type": "application/json" } });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      reported = true;
+      if (outcome === "network") throw new TypeError("fetch failed");
+      return new Response("{}", { status: outcome === "answered" ? 202 : 503, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    const kit = createWebsiteKit({ apiUrl: API, appUrl: APP, realm: "acme", clientSecret: SECRET, origin: ORIGIN, fetch: fetchImpl, now: () => NOW });
+    const res = (await kit.handle(post("/session/code-start", { email: "buyer@example.org", offer: OFFER })))!;
+    assert.equal(res.status, 200, outcome);
+    assert.equal(reported, true, `the report finished before the answer (${outcome})`);
+  }
 });

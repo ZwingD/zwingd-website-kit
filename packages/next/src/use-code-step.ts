@@ -3,7 +3,7 @@
  * The code step before payment (checkout v3.2, spec §8, §8a, A2) as a
  * headless hook: the page draws the step its own way, the kit runs it.
  *
- *   const step = useCodeStep({ offer, expectedTotalMinor, storageKey, terms });
+ *   const step = useCodeStep({ offer, expectedTotalMinor, expectedCurrencyCode, country, storageKey, terms });
  *   <input {...step.emailInputProps} value={email} onChange={...} />
  *   step.sendCode(email)                 // email → sending → code (focus moves to the code input)
  *   <input {...step.codeInputProps} />   // one input: paste "123 456" works; Tab leaves it
@@ -51,6 +51,11 @@ export interface UseCodeStepOptions {
   offer: string;
   /** The total the page showed (minor units). Unchanged after the re-quote → straight to payment (A2). */
   expectedTotalMinor: string;
+  /**
+   * The currency of that total (ISO 4217, e.g. "USD", as the quote answers it). A re-quote with the same number
+   * in another currency is a changed price (A2): the buyer sees it and presses "Pay {amount}".
+   */
+  expectedCurrencyCode: string;
   paymentGateway?: string;
   couponCode?: string;
   /**
@@ -336,9 +341,9 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
     }
   }
 
-  function purchaseForm(expectedTotalMinor: string): Record<string, string> {
+  function purchaseForm(expectedTotalMinor: string, expectedCurrencyCode: string): Record<string, string> {
     const o = optionsRef.current;
-    const form: Record<string, string> = { offer: o.offer, expectedTotalMinor };
+    const form: Record<string, string> = { offer: o.offer, expectedTotalMinor, expectedCurrencyCode };
     if (o.paymentGateway) form.paymentGateway = o.paymentGateway;
     if (o.couponCode) form.couponCode = o.couponCode;
     if (o.country) form.country = o.country;
@@ -425,7 +430,7 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
             ...(extras.firstName ? { firstName: extras.firstName } : {}),
             ...(extras.lastName ? { lastName: extras.lastName } : {}),
             ...(docs.length > 0 ? { acceptedDocuments: JSON.stringify(docs) } : {}),
-            ...purchaseForm(o.expectedTotalMinor),
+            ...purchaseForm(o.expectedTotalMinor, o.expectedCurrencyCode),
           }),
         );
         settle(res);
@@ -442,7 +447,8 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
         dispatch({ type: "pay" });
         // The price the buyer was shown: the member price, else the page's own.
         const total = s.price?.totalMinor ?? optionsRef.current.expectedTotalMinor;
-        settle(await withFormToken((csrf) => client.pay({ csrf, ...purchaseForm(total) })));
+        const currency = s.price?.currencyCode ?? optionsRef.current.expectedCurrencyCode;
+        settle(await withFormToken((csrf) => client.pay({ csrf, ...purchaseForm(total, currency) })));
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],

@@ -12,13 +12,17 @@
  *   POST /session/code-verify        same-site POST + CSRF. `code`, `firstName?`,
  *                                    `lastName?`, `acceptedDocuments?` (JSON) and
  *                                    the purchase (`offer`, `expectedTotalMinor`,
- *                                    `country?`, `couponCode?`, `paymentGateway?`,
+ *                                    `expectedCurrencyCode`, `country?`,
+ *                                    `couponCode?`, `paymentGateway?`,
  *                                    attribution). `country` is the master-data
  *                                    country id the page priced the guest total
  *                                    in; it wins over the kit's `visitorCountry`.
- *                                    Verify → proof cookie → re-quote with the
- *                                    proof → unchanged total: `checkout/start`
- *                                    at once; changed: `confirm-price` (A2).
+ *                                    A purchase field missing or in the wrong
+ *                                    shape is 400 INVALID_REQUEST BEFORE the
+ *                                    code is spent. Verify → proof cookie →
+ *                                    re-quote with the proof → unchanged total
+ *                                    and currency: `checkout/start` at once;
+ *                                    changed: `confirm-price` (A2).
  *   POST /session/code-pay           same-site POST + CSRF. "Pay {amount}": a
  *                                    start with the proof at the shown total.
  *   POST /session/checkout-continue  same-site POST + CSRF, the thank-you
@@ -99,6 +103,7 @@ const EMAIL = /^[^\s@]{1,64}@[^\s@]{1,253}$/;
 const OBJECT_ID = /^[0-9a-f]{24}$/;
 const DIGITS = /^\d{1,12}$/;
 const EXPECTED_TOTAL = /^\d{1,18}$/;
+const CURRENCY = /^[A-Z]{3}$/;
 // eslint-disable-next-line no-control-regex
 const COUPON = /^[^\u0000-\u001f\u007f]{1,64}$/;
 const BOT_TOKEN_MAX = 4096;
@@ -108,6 +113,8 @@ const DOC_VALUE_MAX = 64;
 const ATTRIBUTION_MAX = 200;
 /** The most the API's PAID extension adds past the verify-time life (30 min after payment, spec §4.3, A7). */
 const PROOF_PAID_EXTENSION_S = 30 * 60;
+/** The "code sent" report's own cap: the step waits for it, so a slow intake never holds the buyer long. */
+const DROP_OFF_TIMEOUT_MS = 2_000;
 /** Refusals of a checkout call with a proof after which the proof is no good: the cookie is dropped. */
 const PROOF_GONE = new Set(["CHECKOUT_PROOF_INVALID", "CHECKOUT_PROOF_EMAIL_MISMATCH", "EMAIL_VERIFICATION_REQUIRED"]);
 
@@ -261,10 +268,13 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     return typeof value === "string" && PROOF_PATTERN.test(value) ? value : null;
   }
 
-  function dropOff(email: string, offer: string | undefined): void {
+  /**
+   * "Code sent" ("verified" is identity's own, B5). Awaited, at most DROP_OFF_TIMEOUT_MS, and never throws: a
+   * promise left running after the answer is frozen or dropped on serverless hosts, so the report would be lost.
+   */
+  async function dropOff(email: string, offer: string | undefined): Promise<void> {
     if (!offer) return;
-    // Fire-and-forget: never awaited, never blocks the step, never throws. "verified" is identity's own (B5).
-    void reportDropOff(config, { email, offer, stage: "code_sent" }).catch(() => undefined);
+    await reportDropOff(config, { email, offer, stage: "code_sent" }, DROP_OFF_TIMEOUT_MS).catch(() => undefined);
   }
 
   function ticketCookie(ticket: CodeTicket, email: string, offer: string | undefined): string {
@@ -275,10 +285,27 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
 
   const browserTicket = (t: CodeTicket): CodeStepTicket => ({ codeLength: t.codeLength, codeExpiresInSeconds: t.codeExpiresInSeconds, resendAvailableAt: t.resendAvailableAt });
 
-  /** The purchase the page posts with verify and pay: never a price it was not shown, never a return address. */
+  /** True when the page sent `name` (non-empty) but not in the shape `pattern` takes. */
+  const malformed = (form: Record<string, string>, name: string, pattern: RegExp) =>
+    typeof form[name] === "string" && form[name] !== "" && !pattern.test(form[name]!);
+
+  /**
+   * The purchase the page posts with verify and pay: never a price it was not shown, never a return address.
+   * `bad` names a field the page sent in the wrong shape: refused before the code is spent, never dropped (a
+   * dropped country or coupon re-quotes another price and shows a false "member price").
+   */
   function purchaseOf(form: Record<string, string>, fallbackOffer: string | undefined) {
     const offer = typeof form.offer === "string" && OBJECT_ID.test(form.offer) ? form.offer : fallbackOffer;
     const expectedTotalMinor = typeof form.expectedTotalMinor === "string" && EXPECTED_TOTAL.test(form.expectedTotalMinor) ? form.expectedTotalMinor : null;
+    // The currency of the shown total: a re-quote with the same number in another currency is not "unchanged" (A2).
+    const expectedCurrencyCode = typeof form.expectedCurrencyCode === "string" && CURRENCY.test(form.expectedCurrencyCode) ? form.expectedCurrencyCode : null;
+    const bad =
+      malformed(form, "offer", OBJECT_ID) ||
+      malformed(form, "expectedTotalMinor", EXPECTED_TOTAL) ||
+      malformed(form, "expectedCurrencyCode", CURRENCY) ||
+      malformed(form, "country", OBJECT_ID) ||
+      malformed(form, "couponCode", COUPON) ||
+      malformed(form, "paymentGateway", OBJECT_ID);
     const couponCode = typeof form.couponCode === "string" && COUPON.test(form.couponCode) ? form.couponCode : undefined;
     const paymentGateway = typeof form.paymentGateway === "string" && OBJECT_ID.test(form.paymentGateway) ? form.paymentGateway : undefined;
     // The country the page priced `expectedTotalMinor` in (e.g. one the buyer picked), as a master-data id.
@@ -288,7 +315,7 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
       const value = form[key];
       if (typeof value === "string" && value.trim() !== "") attribution[key] = value.trim().slice(0, ATTRIBUTION_MAX);
     }
-    return { offer, expectedTotalMinor, couponCode, paymentGateway, country, attribution: Object.keys(attribution).length > 0 ? attribution : undefined };
+    return { offer, expectedTotalMinor, expectedCurrencyCode, couponCode, paymentGateway, country, bad, attribution: Object.keys(attribution).length > 0 ? attribution : undefined };
   }
   type Purchase = ReturnType<typeof purchaseOf> & { offer: string };
 
@@ -362,7 +389,7 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     if (!quoted.ok) return failed(quoted.error, quoted.reason);
     const q = quoted.body;
     if (q.alreadyEnrolled) return { kind: "already-owned" };
-    if (p.expectedTotalMinor === null || q.totalMinor !== p.expectedTotalMinor) {
+    if (p.expectedTotalMinor === null || q.totalMinor !== p.expectedTotalMinor || q.currencyCode !== p.expectedCurrencyCode) {
       return { kind: "confirm-price", totalMinor: q.totalMinor, currencyCode: q.currencyCode, minorUnitExponent: q.minorUnitExponent };
     }
     return startWithProof(buyer, p, q.totalMinor, country);
@@ -389,7 +416,7 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
       const r = refusalOf(res);
       return json(r.status, r.body);
     }
-    dropOff(email, offer);
+    await dropOff(email, offer);
     // A new ticket: any proof from an earlier email is dropped (E4).
     return json(200, browserTicket(res.body), [ticketCookie(res.body, email, offer), clearProof()]);
   }
@@ -436,6 +463,10 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     // No digits at all: the code's shape is wrong, so it isn't right (no guess is spent).
     if (!DIGITS.test(code)) return json(400, { reason: "WEBSITE_CODE_INVALID" } satisfies CodeStepRefusal);
     const purchase = purchaseOf(form, t.o);
+    // Before the code is spent: a purchase the kit could not pay for would leave the buyer with a used code.
+    if (purchase.bad || !purchase.offer || purchase.expectedTotalMinor === null || purchase.expectedCurrencyCode === null) {
+      return json(400, { reason: "INVALID_REQUEST" } satisfies CodeStepRefusal);
+    }
     const buyerIp = buyerIpOf(req);
     if (!buyerIp) return json(503, { reason: UNAVAILABLE_REASON } satisfies CodeStepRefusal);
 
@@ -463,7 +494,6 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
       serializeCookie(names.proof, res.body.proof, { sameSite: "Lax", maxAge: res.body.proofExpiresInSeconds + PROOF_PAID_EXTENSION_S }, local),
       clearTicket(),
     ];
-    if (!purchase.offer) return paymentAnswer({ kind: "payment-failed", reason: UNAVAILABLE_REASON }, setCookies);
     const buyer = { checkoutProof: res.body.proof, buyerIp };
     const answer = await payAfterVerify(buyer, purchase as Purchase, await countryFor(purchase as Purchase, req));
     return paymentAnswer(answer, setCookies);
@@ -473,7 +503,7 @@ export function createCodeRoutes(deps: CodeRoutesDeps): CodeRoutes {
     if (req.method !== "POST") return methodNotAllowed("POST");
     if (!sameSiteForm(req)) return forbidden();
     const purchase = purchaseOf(req.form ?? {}, undefined);
-    if (!purchase.offer || purchase.expectedTotalMinor === null) return json(400, { reason: "INVALID_REQUEST" } satisfies CodeStepRefusal);
+    if (purchase.bad || !purchase.offer || purchase.expectedTotalMinor === null) return json(400, { reason: "INVALID_REQUEST" } satisfies CodeStepRefusal);
     const proof = proofOf(req.cookies);
     if (!proof) return paymentAnswer({ kind: "payment-failed", reason: "CHECKOUT_PROOF_INVALID" });
     const buyerIp = buyerIpOf(req);

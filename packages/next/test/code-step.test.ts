@@ -87,6 +87,7 @@ async function mount(server: ReturnType<typeof fakeServer>, extra: { terms?: typ
       now: () => clock.now,
       offer: OFFER,
       expectedTotalMinor: "9900",
+      expectedCurrencyCode: "USD",
       storageKey: (id) => `example:checkout:order:${id}`,
       storage: { setItem: (k, v) => void stored.set(k, v) },
       navigate: (url) => void navigated.push(url),
@@ -185,7 +186,7 @@ test("verify, total unchanged: ONE verify with the purchase, order kept, straigh
   await settle(act);
   const verifies = server.sent.filter((x) => x.path === "/session/code-verify");
   assert.equal(verifies.length, 1);
-  assert.deepEqual(verifies[0]!.form, { csrf: CSRF, code: "123456", offer: OFFER, expectedTotalMinor: "9900" });
+  assert.deepEqual(verifies[0]!.form, { csrf: CSRF, code: "123456", offer: OFFER, expectedTotalMinor: "9900", expectedCurrencyCode: "USD" });
   assert.equal(handle.current!.state.step, "paying");
   assert.equal(container.querySelector('[role="status"]')!.textContent, "Taking you to payment…");
   assert.deepEqual(navigated, [REDIRECT.url]);
@@ -213,7 +214,7 @@ test("A2: a changed total shows 'Your member price is {amount}.' and 'Pay {amoun
   await act(async () => { await handle.current!.pay(); });
   await settle(act);
   const pay = server.sent.find((x) => x.path === "/session/code-pay")!;
-  assert.deepEqual(pay.form, { csrf: CSRF, offer: OFFER, expectedTotalMinor: "7900" });
+  assert.deepEqual(pay.form, { csrf: CSRF, offer: OFFER, expectedTotalMinor: "7900", expectedCurrencyCode: "USD" });
   assert.deepEqual(navigated, [REDIRECT.url]);
   await unmount();
 });

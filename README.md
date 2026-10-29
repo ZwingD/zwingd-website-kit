@@ -64,7 +64,7 @@ The example site also reads `ZWINGD_COUNTRY_IDS`. That variable is the example's
 | `GET /session/code-step` | v0.2.0. The code step's form value (`formToken`, sent as `csrf`) and the open step a reload resumes (`pending`) |
 | `POST /session/code-start` | v0.2.0. Sends the buyer a code (`email`, `offer?`, `botToken?`). Same-site POST with `csrf` |
 | `POST /session/code-resend` | v0.2.0. A new code on the same ticket. Same-site POST with `csrf` |
-| `POST /session/code-verify` | v0.2.0. Checks the code (`code`, `firstName?`, `lastName?`, `acceptedDocuments?` as JSON, and the purchase: `offer`, `expectedTotalMinor`, `country?`, `couponCode?`, `paymentGateway?`, attribution). Keeps the proof server-side, re-quotes with it, and starts payment or answers the new price. Creates no account and no session. Same-site POST with `csrf` |
+| `POST /session/code-verify` | v0.2.0. Checks the code (`code`, `firstName?`, `lastName?`, `acceptedDocuments?` as JSON, and the purchase: `offer`, `expectedTotalMinor`, `expectedCurrencyCode`, `country?`, `couponCode?`, `paymentGateway?`, attribution). Keeps the proof server-side, re-quotes with it, and starts payment or answers the new price. Creates no account and no session. Same-site POST with `csrf` |
 | `POST /session/code-pay` | v0.2.0. "Pay {amount}" after the price changed: a start with the held proof at the shown total. Same-site POST with `csrf` |
 | `POST /session/checkout-continue` | v0.2.0. The thank-you button ("Continue sign-up" / "Go to my course"). Fetched by `CheckoutContinueButton` at the press: mints the one-time continue nonce and answers `{ nonce, continueUrl }` (or `400 { signInUrl }`). Same-site POST with `csrf` |
 
@@ -251,6 +251,7 @@ import { CODE_STEP_COPY, CodeStepLiveRegion, fillCopy, useCodeStep } from "@zwin
 const step = useCodeStep({
   offer,
   expectedTotalMinor,                 // the guest total the page showed
+  expectedCurrencyCode,               // its currency, e.g. "USD"
   country,                            // the master-data country id that total was priced in (optional)
   storageKey: (id) => `mysite:checkout:order:${id}`,
   terms,                              // [{ type, version }] when the workspace requires terms
