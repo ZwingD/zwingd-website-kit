@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.1
+
+Two fixes to the code step's terms box (seen on SCPMI's stage checkout, 2026-10-30). Not released yet: the `v*` tag needs the operator's go.
+
+- **Ticking the terms box no longer clears the code.** The hook cleared the code whenever the step's error went back to null while a code had been asked for, so ticking the box after "Continue" (which clears the terms error) wiped the six digits the buyer had typed. The code is now cleared only when a new code is asked for (the step opens, or a new code is sent).
+- **`WEBSITE_TERMS_REQUIRED` has its own line.** Continue without the box ticked said the box's own sentence ("I agree to the {terms links}.") as the error. It now says `CODE_STEP_COPY.termsRequired`, "Accept the terms to continue." (Helm's signed line for this refusal, #5 on #1963).
+
 ## 0.2.0
 
 Checkout v3.2: the buyer proves their email by code before payment (ZwingD/zwingd-backend#1963, spec v3.2). Needs the API's website code and proof routes (zwingd-backend#1984); a site that does not use them is unchanged. Not released yet: the `v*` tag needs the operator's go.

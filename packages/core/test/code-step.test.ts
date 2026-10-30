@@ -40,6 +40,7 @@ test("CODE_STEP_COPY is the §8a copy, word for word", () => {
     hint: "Didn't get a code? Check your spam folder, or use a different email.",
     invalidEmail: "Enter a valid email address.",
     terms: "I agree to the {terms links}.",
+    termsRequired: "Accept the terms to continue.",
     goingToPayment: "Taking you to payment…",
     memberPrice: "Your member price is {amount}.",
     payButton: "Pay {amount}",
@@ -148,6 +149,8 @@ test("terms required is recoverable: the step stays, the tick box shows and gets
   assert.equal(s.step, "code");
   assert.equal(s.termsRequired, true);
   assert.equal(s.error?.field, "terms");
+  // Its own line under the box, never the box's sentence repeated.
+  assert.equal(s.error?.message, "Accept the terms to continue.");
   assert.equal(s.focusTerms, verifying.focusTerms + 1);
   const ticked = codeStepReducer(s, { type: "terms", accepted: true });
   assert.equal(ticked.termsAccepted, true);

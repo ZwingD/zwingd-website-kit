@@ -376,8 +376,12 @@ export function useCodeStep(options: UseCodeStepOptions): CodeStep {
   useEffect(() => {
     if (state.focusTerms > 0) termsInputRef.current?.focus();
   }, [state.focusTerms]);
-  // A new code to type: the old one is cleared.
+  // A new code to type (the step opened, or a new code was sent): the old one is cleared. Only when `focusCode`
+  // moves: an error going away (ticking the terms box clears the terms error) must never wipe what was typed.
+  const clearedFor = useRef(0);
   useEffect(() => {
+    if (state.focusCode === clearedFor.current) return;
+    clearedFor.current = state.focusCode;
     if (state.focusCode > 0 && state.error === null) setCodeValue("");
   }, [state.focusCode, state.error]);
 

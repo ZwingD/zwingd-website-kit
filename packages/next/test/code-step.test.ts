@@ -280,12 +280,16 @@ test("terms: the tick box shows, Continue without it is recoverable (no call), t
   const box = q(container, `#${s.ids.terms}`);
   assert.equal(box.getAttribute("aria-invalid"), "true");
   assert.equal((window.document.activeElement as unknown) === box, true, "focus on the tick box");
+  assert.equal(s.state.error?.message, "Accept the terms to continue.");
   await act(async () => { handle.current!.setTermsAccepted(true); });
   assert.equal(handle.current!.state.error, null);
+  // Ticking the box clears its error, never the code the buyer typed.
+  assert.equal(handle.current!.code, "123456");
   await act(async () => { await handle.current!.verify(); });
   await settle(act);
   const v = server.sent.find((x) => x.path === "/session/code-verify")!;
   assert.equal(v.form.acceptedDocuments, JSON.stringify(TERMS));
+  assert.equal(v.form.code, "123456");
   await unmount();
 });
 

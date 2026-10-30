@@ -1,6 +1,6 @@
 {
   "name": "@zwingd-ce/website-kit-next",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Next.js App Router adapter of the Zwingd website kit: /session/* route handlers, server getMember, and an unstyled AccountButton.",
   "type": "module",
   "main": "./dist/index.cjs",
