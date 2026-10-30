@@ -4,6 +4,7 @@
  * `WebsiteKitConfigError` naming the SETTING, never its value: the client
  * secret must never appear in an error, a log or a page.
  */
+import type { RequestView } from "./flows.ts";
 import { savedPath } from "./saved-path.ts";
 
 export interface WebsiteKitConfigInput {
@@ -40,7 +41,31 @@ export interface WebsiteKitConfigInput {
    * learning page (`/communities/learning`).
    */
   coursePath?: string | null;
+  /**
+   * v0.2.0 code step: the buyer's own IP from the request headers (lower-case
+   * names), forwarded to the code calls as `buyerIp` (the code budget's
+   * requester). Default `forwardedBuyerIp`: `x-real-ip`, else the LAST
+   * `x-forwarded-for` hop (both set by the site's own proxy; never the first
+   * hop, which the browser controls). Behind more than one proxy, pass your own. A value that is not an IPv4/IPv6 address counts as no IP: the code routes then answer 503 UNAVAILABLE (with insecureLocalCookies, 127.0.0.1 is used).
+   */
+  buyerIpFrom?: BuyerIpResolver;
+  /**
+   * v0.2.0: the visitor's country (a master-data country id, 24 hex) for the
+   * code step's quote and start with the proof, from the site's own source
+   * (e.g. the host's geo header). Never the request body. `createMemberCheckout`
+   * uses it too when it is not given its own. Default: none. The code step
+   * needs a country for a buyer who is not an active member: this, or the
+   * `country` the page posts. With neither, the API refuses that buyer's start
+   * (`HOSTED_GUEST_INVALID`, field `visitorCountry`) after the code is spent.
+   */
+  visitorCountry?: VisitorCountryResolver | null;
 }
+
+/** The visitor's country as a master-data country id (24 hex), from the site's own source; null for none. */
+export type VisitorCountryResolver = (req: RequestView) => string | null | undefined | Promise<string | null | undefined>;
+
+/** Reads the buyer's IP from the request headers (lower-case names); null or undefined when unknown. */
+export type BuyerIpResolver = (headers: Record<string, string | undefined>) => string | null | undefined;
 
 export interface WebsiteKitConfig {
   apiUrl: string;
@@ -54,6 +79,8 @@ export interface WebsiteKitConfig {
   now: () => number;
   accountPath: string | null;
   coursePath: string | null;
+  buyerIpFrom: BuyerIpResolver;
+  visitorCountry: VisitorCountryResolver | null;
 }
 
 export class WebsiteKitConfigError extends Error {
@@ -119,6 +146,32 @@ function coursePathOf(value: unknown): string | null {
   return path;
 }
 
+const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+const IPV6 = /^[0-9A-Fa-f:.]{2,45}$/;
+
+/** `value` when it is an IPv4 or IPv6 address (brackets dropped), else null. */
+export function ipOf(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const ip = value.trim().replace(/^\[(.*)\]$/, "$1");
+  if (IPV4.test(ip)) return ip;
+  if (ip.includes(":") && IPV6.test(ip)) return ip.toLowerCase();
+  return null;
+}
+
+/**
+ * The default `buyerIpFrom`: `x-real-ip`, else the LAST `x-forwarded-for` hop. Both are written by the site's own
+ * proxy; the first hop is whatever the browser sent, so a caller could rotate it on every request and dodge the
+ * per-requester code budget (spec v3.2 §4.4: the requester is buyerIp; PR #17 review). A site behind more than one proxy sets `buyerIpFrom`.
+ */
+export function forwardedBuyerIp(headers: Record<string, string | undefined>): string | null {
+  const real = ipOf(headers["x-real-ip"]);
+  if (real) return real;
+  const forwarded = headers["x-forwarded-for"];
+  if (typeof forwarded !== "string" || forwarded.trim() === "") return null;
+  const hops = forwarded.split(",").map((hop) => hop.trim()).filter(Boolean);
+  return ipOf(hops[hops.length - 1]);
+}
+
 /** Check and complete the settings once, at start-up. */
 export function resolveConfig(input: WebsiteKitConfigInput): WebsiteKitConfig {
   const local = input.insecureLocalCookies === true;
@@ -149,13 +202,29 @@ export function resolveConfig(input: WebsiteKitConfigInput): WebsiteKitConfig {
     now: input.now ?? Date.now,
     accountPath: appPath(input.accountPath, "accountPath"),
     coursePath: coursePathOf(input.coursePath),
+    buyerIpFrom: buyerIpFromOf(input.buyerIpFrom),
+    visitorCountry: visitorCountryOf(input.visitorCountry),
   };
+}
+
+function buyerIpFromOf(value: unknown): BuyerIpResolver {
+  if (value === undefined || value === null) return forwardedBuyerIp;
+  if (typeof value !== "function") throw new WebsiteKitConfigError("buyerIpFrom");
+  return value as BuyerIpResolver;
+}
+
+function visitorCountryOf(value: unknown): VisitorCountryResolver | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "function") throw new WebsiteKitConfigError("visitorCountry");
+  return value as VisitorCountryResolver;
 }
 
 /** The settings from the standard environment names (server side only). */
 export function configFromEnv(
   env: Record<string, string | undefined>,
-  extra: Partial<Pick<WebsiteKitConfigInput, "insecureLocalCookies" | "timeoutMs" | "fetch" | "now" | "accountPath" | "coursePath">> = {},
+  extra: Partial<
+    Pick<WebsiteKitConfigInput, "insecureLocalCookies" | "timeoutMs" | "fetch" | "now" | "accountPath" | "coursePath" | "buyerIpFrom" | "visitorCountry">
+  > = {},
 ): WebsiteKitConfig {
   return resolveConfig({
     apiUrl: env.ZWINGD_API_URL ?? "",

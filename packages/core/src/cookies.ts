@@ -4,7 +4,16 @@
  *   - session: the session token; until `expiresAt`;
  *   - csrf:    the sign-out form's value, `SameSite=Strict`, set with the session;
  *   - return:  the page a sign-out started on, kept while the app signs the
- *              member out (the app always returns to `<origin>/`); 10 minutes.
+ *              member out (the app always returns to `<origin>/`); 10 minutes;
+ *   - ticket:  v0.2.0, the open code step (ticket, email, offer, times), so a
+ *              reload after the mail app resumes the step, and "Send a new
+ *              code" can start again with the stored email once the code has
+ *              expired; 1 hour;
+ *   - proof:   v0.2.0, the verified-email proof from the code step (checkout
+ *              v3.2 §4.3), `SameSite=Lax`, Max-Age = `proofExpiresInSeconds` + 30 min (the
+ *              most the API's PAID extension adds, A7). Only
+ *              the site's server reads it: it never reaches page JavaScript
+ *              or an address.
  * All `__Host-` names, `HttpOnly`, `Secure`, `Path=/`. A removing `Set-Cookie`
  * carries `Secure` and `Path=/` too, or the browser ignores it and the cookie
  * stays. `insecureLocalCookies` (local `http://localhost` only) drops the
@@ -16,6 +25,8 @@ export interface CookieNames {
   session: string;
   csrf: string;
   return: string;
+  ticket: string;
+  proof: string;
 }
 
 export const SECURE_COOKIE_NAMES: CookieNames = Object.freeze({
@@ -23,6 +34,8 @@ export const SECURE_COOKIE_NAMES: CookieNames = Object.freeze({
   session: "__Host-zw_session",
   csrf: "__Host-zw_csrf",
   return: "__Host-zw_return",
+  ticket: "__Host-zw_ticket",
+  proof: "__Host-zw_proof",
 });
 
 export const LOCAL_COOKIE_NAMES: CookieNames = Object.freeze({
@@ -30,10 +43,13 @@ export const LOCAL_COOKIE_NAMES: CookieNames = Object.freeze({
   session: "zw_session",
   csrf: "zw_csrf",
   return: "zw_return",
+  ticket: "zw_ticket",
+  proof: "zw_proof",
 });
 
 export const START_COOKIE_MAX_AGE_S = 600;
 export const RETURN_COOKIE_MAX_AGE_S = 600;
+export const TICKET_COOKIE_MAX_AGE_S = 3600;
 
 export function cookieNames(insecureLocalCookies: boolean): CookieNames {
   return insecureLocalCookies ? LOCAL_COOKIE_NAMES : SECURE_COOKIE_NAMES;

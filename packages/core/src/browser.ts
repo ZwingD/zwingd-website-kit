@@ -66,6 +66,62 @@ export interface StoredMemberCheckout {
   expiresAt: string | null;
 }
 
+/**
+ * v0.2.0: what the return page reads back for a verified buyer's order (the
+ * code step): the same shape, with `member: false` (no session; the return
+ * page shows the thank-you button from `checkoutContinueFor`).
+ */
+export type StoredVerifiedCheckout = Omit<StoredMemberCheckout, "member"> & { member: false };
+
+/**
+ * Keep an order's token in this tab's storage under the site's key, before the
+ * browser leaves for payment. False when it cannot be kept (no storage, a
+ * full or blocked one): then do not send the buyer on.
+ */
+export function storeCheckoutOrder(
+  order: { orderId: string; orderToken: string | null; orderTokenExpiresAt: string | null },
+  options: { storageKey: (orderId: string) => string; coursePath?: string | null; storage?: CheckoutStorage | null; member: boolean },
+): boolean {
+  if (!order.orderToken) return false;
+  const base = { orderId: order.orderId, token: order.orderToken, email: "" as const, coursePath: options.coursePath ?? null, expiresAt: order.orderTokenExpiresAt };
+  const record: StoredMemberCheckout | StoredVerifiedCheckout = options.member ? { ...base, member: true } : { ...base, member: false };
+  try {
+    const storage = options.storage === undefined ? defaultStorage() : options.storage;
+    if (!storage) return false;
+    storage.setItem(options.storageKey(order.orderId), JSON.stringify(record));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Either record a return page may find: a member's order, or a verified buyer's from the code step. */
+export type StoredCheckout = StoredMemberCheckout | StoredVerifiedCheckout;
+
+/**
+ * The return page's read of the order record `storeCheckoutOrder` kept for `orderId` in this tab, checked; null
+ * when there is none, it is for another order, or it is not the kit's shape (no storage, another tab, edited).
+ */
+export function readCheckoutOrder(
+  orderId: string,
+  options: { storageKey: (orderId: string) => string; storage?: { getItem(key: string): string | null } | null },
+): StoredCheckout | null {
+  try {
+    const storage =
+      options.storage === undefined ? ((globalThis as { sessionStorage?: { getItem(key: string): string | null } }).sessionStorage ?? null) : options.storage;
+    const raw = storage?.getItem(options.storageKey(orderId));
+    if (!raw) return null;
+    const r = JSON.parse(raw) as Record<string, unknown> | null;
+    if (!r || r.orderId !== orderId || typeof r.token !== "string" || r.token === "" || typeof r.member !== "boolean") return null;
+    const coursePath = typeof r.coursePath === "string" ? r.coursePath : null;
+    const expiresAt = typeof r.expiresAt === "string" ? r.expiresAt : null;
+    const base = { orderId, token: r.token, email: "" as const, coursePath, expiresAt };
+    return r.member ? { ...base, member: true } : { ...base, member: false };
+  } catch {
+    return null;
+  }
+}
+
 const unavailable = (): StartMemberCheckoutResult => ({ kind: "fallback", reason: "unavailable" });
 
 function defaultStorage(): CheckoutStorage | null {
@@ -117,22 +173,13 @@ export async function startMemberCheckout(offer: string, options: StartMemberChe
   // a misconfigured API, which it reports itself.)
   const owned = (): StartMemberCheckoutResult => ({ kind: "already-owned", settled: true });
   // The return page needs the order token: without it stored, the buyer is not sent on.
-  if (!answer.orderToken) return answer.settled === true ? owned() : { kind: "fallback", reason: "storage-unavailable" };
-  const record: StoredMemberCheckout = {
-    orderId: answer.orderId,
-    token: answer.orderToken,
-    email: "",
-    member: true,
+  const kept = storeCheckoutOrder(answer, {
+    storageKey: options.storageKey,
     coursePath: options.coursePath ?? null,
-    expiresAt: answer.orderTokenExpiresAt,
-  };
-  try {
-    const storage = options.storage === undefined ? defaultStorage() : options.storage;
-    if (!storage) return answer.settled === true ? owned() : { kind: "fallback", reason: "storage-unavailable" };
-    storage.setItem(options.storageKey(answer.orderId), JSON.stringify(record));
-  } catch {
-    return answer.settled === true ? owned() : { kind: "fallback", reason: "storage-unavailable" };
-  }
+    member: true,
+    ...(options.storage === undefined ? {} : { storage: options.storage }),
+  });
+  if (!kept) return answer.settled === true ? owned() : { kind: "fallback", reason: "storage-unavailable" };
 
   const navigate = options.navigate ?? ((url: string) => (globalThis as { location?: { assign(u: string): void } }).location?.assign(url));
   navigate(answer.url);

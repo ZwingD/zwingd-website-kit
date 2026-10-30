@@ -17,12 +17,18 @@
  *                           that are cached or static and read the member in
  *                           the browser.
  *
+ * v0.2.0 adds the code step before payment and the thank-you continue
+ * (code-routes.ts, checkout v3.2): /session/code-step, /session/code-start,
+ * /session/code-resend, /session/code-verify, /session/code-pay and
+ * /session/checkout-continue.
+ *
  * Every answer carries `Cache-Control: no-store` and `Referrer-Policy:
  * no-referrer`. No token, secret, verifier or code is ever logged, thrown or
  * put in a URL other than the contract's own redirects.
  */
 import { endSession, exchangeCode, isSessionToken } from "./api-client.ts";
 import { createAccountLinks } from "./account.ts";
+import { CODE_PATHS, createCodeRoutes, type CheckoutContinue } from "./code-routes.ts";
 import { resolveConfig, type WebsiteKitConfig, type WebsiteKitConfigInput } from "./config.ts";
 import {
   clearCookie,
@@ -37,7 +43,13 @@ import { base64url, codeChallenge, randomToken, STATE_LENGTH, STATE_PATTERN, VER
 import { CSRF_VALUE, header, sameSitePost } from "./same-site.ts";
 import { savedPath } from "./saved-path.ts";
 
-export const SESSION_PATHS = Object.freeze({ start: "/session/start", callback: "/session/callback", end: "/session/end", me: "/session/me" });
+export const SESSION_PATHS = Object.freeze({
+  start: "/session/start",
+  callback: "/session/callback",
+  end: "/session/end",
+  me: "/session/me",
+  ...CODE_PATHS,
+});
 
 /** The form field the sign-out form carries the CSRF value in (same-site.ts owns the rule). */
 export { CSRF_FIELD } from "./same-site.ts";
@@ -60,7 +72,7 @@ export interface ResponseView {
   headers: Record<string, string>;
   /** One entry per `Set-Cookie` header. */
   setCookies: string[];
-  /** A text body (only `/session/me` has one). */
+  /** A text body (the JSON routes: `/session/me`, the code step). */
   body?: string;
 }
 
@@ -134,7 +146,32 @@ export interface WebsiteKit extends MemberReader {
   callback(req: RequestView): Promise<ResponseView>;
   end(req: RequestView): Promise<ResponseView>;
   me(req: RequestView): Promise<ResponseView>;
-  /** Route a request to start / callback / end / me; null when the path is none of them. */
+  /** v0.2.0 `GET /session/code-step`: the code step's form value and the open step a reload resumes. */
+  codeStep(req: RequestView): Promise<ResponseView>;
+  /** v0.2.0 `POST /session/code-start` (same-site POST + CSRF). */
+  codeStart(req: RequestView): Promise<ResponseView>;
+  /** v0.2.0 `POST /session/code-resend` (same-site POST + CSRF); an expired ticket starts again with the stored email. */
+  codeResend(req: RequestView): Promise<ResponseView>;
+  /** v0.2.0 `POST /session/code-verify` (same-site POST + CSRF): proof cookie, re-quote, and payment or the new price. No session. */
+  codeVerify(req: RequestView): Promise<ResponseView>;
+  /** v0.2.0 `POST /session/code-pay` (same-site POST + CSRF): "Pay {amount}" with the held proof. */
+  codePay(req: RequestView): Promise<ResponseView>;
+  /** v0.2.0 `POST /session/code-requote` (same-site POST + CSRF): a reload with the proof held, re-quoted for "Pay {amount}". */
+  codeRequote(req: RequestView): Promise<ResponseView>;
+  /**
+   * v0.2.0 `POST /session/checkout-continue` (same-site POST + CSRF): the thank-you press with `orderId`; mints the
+   * nonce and answers `{ nonce, continueUrl }`.
+   */
+  checkoutContinue(req: RequestView): Promise<ResponseView>;
+  /**
+   * v0.2.0, server only: the thank-you button ("Continue sign-up" / "Go to my
+   * course") for the order on the page, from a server-side read of the proof
+   * context, or null when this browser holds no proof that is still good, the
+   * held proof did not start `orderId` in this browser (Helm #26, a kit-only
+   * check), or the context read fails (an API fault). Never mints a nonce.
+   */
+  checkoutContinueFor(cookies: Record<string, string>, input: { orderId: string }): Promise<CheckoutContinue | null>;
+  /** Route a request to any /session/* route above; null when the path is none of them. */
   handle(req: RequestView): Promise<ResponseView | null>;
   /**
    * The value the sign-out form posts as `csrf`. When the browser has none yet
@@ -166,6 +203,8 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
   const clearSession = () => clearCookie(names.session, "Lax", local);
   const clearCsrf = () => clearCookie(names.csrf, "Strict", local);
   const clearReturn = () => clearCookie(names.return, "Lax", local);
+  // The code routes are made below, once csrfFor and sameOriginRead exist.
+  let code: ReturnType<typeof createCodeRoutes>;
   const appSignOutFallback = () => `${config.appUrl}/session/sign-out?return_origin=${encodeURIComponent(config.origin)}`;
 
   async function start(req: RequestView): Promise<ResponseView> {
@@ -250,7 +289,7 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
         ? clearReturn()
         : serializeCookie(names.return, encodePath(back), { sameSite: "Lax", maxAge: RETURN_COOKIE_MAX_AGE_S }, local);
     // Cleared whatever the API answered: the member is never left signed in on the website.
-    return redirect(303, location, [clearSession(), clearCsrf(), keep]);
+    return redirect(303, location, [clearSession(), clearCsrf(), ...code.clearCookies(), keep]);
   }
 
   function csrfFor(cookies: Record<string, string>): { token: string; setCookie: string | null } {
@@ -297,6 +336,8 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
     };
   }
 
+  code = createCodeRoutes({ config, names, csrfFor, sameOriginRead });
+
   function signOutReturn(req: RequestView): ResponseView | null {
     if (req.method !== "GET" && req.method !== "HEAD") return null;
     if (new URL(req.url, config.origin).pathname !== "/") return null;
@@ -314,12 +355,27 @@ export function createWebsiteKit(input: WebsiteKitConfigInput | WebsiteKitConfig
     callback,
     end,
     me,
+    codeStep: code.codeStep,
+    codeStart: code.codeStart,
+    codeResend: code.codeResend,
+    codeVerify: code.codeVerify,
+    codePay: code.codePay,
+    codeRequote: code.codeRequote,
+    checkoutContinue: code.checkoutContinue,
+    checkoutContinueFor: code.checkoutContinueFor,
     async handle(req) {
       const path = new URL(req.url, config.origin).pathname;
       if (path === SESSION_PATHS.start) return start(req);
       if (path === SESSION_PATHS.callback) return callback(req);
       if (path === SESSION_PATHS.end) return end(req);
       if (path === SESSION_PATHS.me) return me(req);
+      if (path === SESSION_PATHS.codeStep) return code.codeStep(req);
+      if (path === SESSION_PATHS.codeStart) return code.codeStart(req);
+      if (path === SESSION_PATHS.codeResend) return code.codeResend(req);
+      if (path === SESSION_PATHS.codeVerify) return code.codeVerify(req);
+      if (path === SESSION_PATHS.codePay) return code.codePay(req);
+      if (path === SESSION_PATHS.codeRequote) return code.codeRequote(req);
+      if (path === SESSION_PATHS.checkoutContinue) return code.checkoutContinue(req);
       return null;
     },
     csrfFor,

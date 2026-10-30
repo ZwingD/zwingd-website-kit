@@ -1,36 +1,30 @@
-"use client";
 // Where the buyer comes back after paying: <origin>/checkout/return/<orderId>.
-// A real site confirms the payment here with the stored order token
-// (confirmHostedCheckoutPayment and myOrder, #1866); this example only shows
-// that the token was kept for this order in this tab, never in the address.
-import { use, useEffect, useState } from "react";
+// Checkout v3.2: for a buyer who proved their email in the code step, the
+// SERVER reads the proof context (getCheckoutContinue) and hands the page only
+// the button: "Continue sign-up" (new or pending) or "Go to my course"
+// (member). One press: the button asks /session/checkout-continue, which
+// mints the one-time continue nonce then (never on this page load), and sends
+// the buyer on to the app with a form POST carrying it. Without a proof (another browser,
+// or it expired) the page shows the usual course link instead.
+import { getCheckoutContinue } from "@zwingd-ce/website-kit-next/server";
 
-import { orderStorageKey } from "@/components/buy-now";
+import { CheckoutReturn } from "@/components/checkout-return";
+import { zwingd } from "@/lib/zwingd";
 
-export default function CheckoutReturn({ params }: { params: Promise<{ orderId: string }> }) {
-  const { orderId } = use(params);
-  const [found, setFound] = useState<boolean | null>(null);
+export const dynamic = "force-dynamic";
 
-  useEffect(() => {
-    try {
-      const raw = window.sessionStorage.getItem(orderStorageKey(orderId));
-      const record = raw ? (JSON.parse(raw) as { orderId?: unknown; token?: unknown }) : null;
-      setFound(record?.orderId === orderId && typeof record.token === "string");
-    } catch {
-      setFound(false);
-    }
-  }, [orderId]);
-
-  if (found === null) return <p>Checking your order…</p>;
-  return found ? (
-    <section>
-      <h1>Thank you</h1>
-      <p>Your order {orderId} is on its way. This page would now confirm the payment with the stored order token.</p>
-    </section>
-  ) : (
-    <section>
-      <h1>We can&apos;t show this order here</h1>
-      <p>Open this page in the browser you paid in.</p>
-    </section>
-  );
+export default async function CheckoutReturnPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ orderId: string }>;
+  searchParams: Promise<{ course?: string }>;
+}) {
+  const { orderId } = await params;
+  const { course } = await searchParams;
+  const kit = zwingd();
+  // The button for THIS order only (Helm #26): the kit checks the held proof started it in this browser.
+  const next = await getCheckoutContinue(kit, { orderId });
+  const courseCode = typeof course === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(course) ? course : null;
+  return <CheckoutReturn orderId={orderId} next={next} courseHref={kit.courseUrl(courseCode ?? "")} />;
 }

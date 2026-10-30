@@ -6,6 +6,7 @@ import { headers } from "next/headers";
 import { getMemberQuote, signOutToken } from "@zwingd-ce/website-kit-next/server";
 
 import { BuyNow } from "@/components/buy-now";
+import { CodeStep } from "@/components/code-step";
 import { OwnedCourse } from "@/components/owned-course";
 import { countryIdFor, memberCheckout, zwingd } from "@/lib/zwingd";
 
@@ -31,11 +32,18 @@ export default async function CoursePage({
   const [quoted, csrf] = await Promise.all([getMemberQuote(memberCheckout(), offer, { visitorCountry: country }), signOutToken(zwingd())]);
 
   if (quoted.status !== "ok" || !csrf) {
+    const guest = guestTotal();
     return (
       <section>
         <h1>Course</h1>
         <p>Log in to buy as a member, or use the guest checkout.</p>
-        <GuestCheckoutStandIn />
+        {/* Checkout v3.2: a workspace with verifyEmail "before-payment" has the buyer prove their email first (no account, no session). */}
+        {/* Only with a known guest total: a guessed one would show every buyer a false "member price" after the code. */}
+        {process.env.EXAMPLE_VERIFY_EMAIL === "before-payment" && guest ? (
+          <CodeStep offer={offer} expectedTotalMinor={guest.totalMinor} expectedCurrencyCode={guest.currencyCode} country={country} courseCode={courseCode} />
+        ) : (
+          <GuestCheckoutStandIn />
+        )}
       </section>
     );
   }
@@ -57,6 +65,16 @@ export default async function CoursePage({
       )}
     </section>
   );
+}
+
+/**
+ * The guest price the page shows, or null when it is not known. A real site reads it from the public guest quote
+ * (in the country it priced in); the example takes it from its env.
+ */
+function guestTotal(): { totalMinor: string; currencyCode: string } | null {
+  const totalMinor = process.env.EXAMPLE_GUEST_TOTAL_MINOR ?? "";
+  const currencyCode = process.env.EXAMPLE_GUEST_CURRENCY ?? "USD";
+  return /^\d{1,18}$/.test(totalMinor) && /^[A-Z]{3}$/.test(currencyCode) ? { totalMinor, currencyCode } : null;
 }
 
 /** Stands in for the website's guest checkout pop-up (#1866): not part of the kit. */

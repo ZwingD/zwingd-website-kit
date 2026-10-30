@@ -12,7 +12,7 @@ The [README](../README.md) is the code reference for the kit: every route, prop 
 4. [Member sign-in: log in, My account, sign out](#4-member-sign-in-log-in-my-account-sign-out)
 5. [Guest checkout: the checkout pop-up](#5-guest-checkout-the-checkout-pop-up)
 6. [The return page](#6-the-return-page)
-7. [Member Buy Now](#7-member-buy-now)
+7. [Member Buy Now](#7-member-buy-now) (and [verify email before payment](#7a-verify-the-buyers-email-before-payment-v020))
 8. [Testing and fixtures](#8-testing-and-fixtures)
 9. [Going live](#9-going-live)
 10. [Troubleshooting](#10-troubleshooting)
@@ -78,6 +78,8 @@ Your **server** environment holds these. None of them may reach the browser. On 
 | `ZWINGD_SESSION_CLIENT_SECRET` | The client secret for this website's origin: `zsh_` followed by 64 hex characters | Member sign-in |
 | `ZWINGD_SITE_ORIGIN` | This website's origin, exactly as it was listed | Member sign-in |
 | `ZWINGD_INSECURE_LOCAL_COOKIES` | `true` for local development on `http://localhost` only. The kit refuses it when `NODE_ENV=production` | Local development |
+
+The code step (v0.2.0) also needs the buyer's IP. The kit's default `buyerIpFrom` reads `x-real-ip`, else the last `x-forwarded-for` hop (both written by your own proxy; the first hop is whatever the browser sent). That is right on Vercel and behind one load balancer. Anywhere else, pass `buyerIpFrom` to `configFromEnv`. Pass `visitorCountry` too if you price by the visitor's country: the code step's quote uses it, and member checkout inherits it.
 
 The kit checks every setting when it starts. A missing or malformed one throws `WebsiteKitConfigError`, which names the setting and never its value.
 
@@ -188,6 +190,29 @@ Act on the result:
 | `fallback` with `refused` or `unavailable` | Say checkout isn't available for this course right now, or open your guest checkout |
 
 The README's section 7 has every field and the record your return page reads.
+
+## 7a. Verify the buyer's email before payment (v0.2.0)
+
+A workspace can ask every self-serve buyer to prove their email before paying (`websiteCheckoutStatus.verifyEmail` is `"before-payment"`). Its guest checkout start is then refused, so your pop-up shows the code step instead.
+
+The code step creates **no account and no session**. A right code gives your server a short-lived proof of the email. The kit keeps it in an HttpOnly cookie, and payment goes ahead against it. The account is made in the app after payment, when the buyer presses the thank-you button.
+
+1. **Read the status** in the browser: `websiteCheckoutStatus { available verifyEmail }`. `verifyEmail` is the string `"off"` or `"before-payment"`.
+2. **Off:** your pop-up is unchanged.
+3. **On, signed in:** skip the code step and use member Buy Now (section 7).
+4. **On, signed out:** email → code → payment. Use `useCodeStep({ offer, expectedTotalMinor, expectedCurrencyCode, country, workspaceName, storageKey, terms })` and draw the step with `CODE_STEP_COPY`. `expectedCurrencyCode` is that total's currency: the same number in another currency counts as a changed price, and it goes with every payment start. `expectedTotalMinor` is the guest total your pop-up showed, and `country` is the master-data country id (24 hex) it was priced in, such as the one the buyer picked. The kit sends it as the API's fallback country: a verified member is priced in their profile country first, and a changed total waits for "Pay {amount}". Without `country` the kit uses the `visitorCountry` setting's country. With neither, no code is sent: the start answers `COUNTRY_REQUIRED` (the error's `field` is `country`), so show your country picker and send again. `workspaceName` goes into "We couldn't take this payment. Try again, or contact {workspace}." After a reload with the code already right, the step resumes at "Pay {amount}" (step `resuming`, then `confirm-price`): draw `resuming` as a loading state.
+5. **After the code** the kit re-quotes with the proof. The same total goes straight to payment ("Taking you to payment…"). A different total (a member's price) shows "Your member price is {amount}." and a "Pay {amount}" button (`step.priceLine`, `step.payLabel`, `step.pay()`).
+6. **Return page:** on the server, `getCheckoutContinue(kit, { orderId })` answers the button for that order (only when this browser's proof started it, and drawn only when this tab holds the order's record), "Continue sign-up" (a new buyer) or "Go to my course" (a member), or `null` without a proof that is still good (or when the context read fails). Draw it with `<CheckoutContinueButton next={next} storageKey={...} />`. One press: the button asks the kit's server, which mints a one-time continue token (a 60-second nonce) at that moment (never on the page load), then sends the buyer on to the app with a form POST carrying it. The token never goes into an address, storage or a log, and the app asks "Continue as {email}" before signing in. If anything is wrong, the press opens the app's normal sign-in. When it is `null`, show your usual course link.
+
+The code step's rules:
+
+- The copy is fixed (signed). You may restyle it, but not reword it. That includes the terms tick box, "I agree to the {terms links}.", where you draw your links to the documents.
+- One code input: spread `step.codeInputProps` on it. It has `autocomplete="one-time-code"` and `inputmode="numeric"` and no `maxLength`, so a pasted "123 456" becomes `123456`. Don't split it into one box per digit or catch Tab: Tab must leave the field.
+- Focus moves to the code input when the step opens and after a wrong or expired code. With terms required and not ticked, focus moves to the tick box and the step stays usable.
+- Tie errors to their inputs: the props carry `aria-invalid` and `aria-describedby` with `step.ids`; draw each message with the matching id. `state.error.field` says which input.
+- Put `<CodeStepLiveRegion step={step} />` in the step and keep it mounted. It announces the countdown politely when it starts and when it is ready, never every second.
+- On an expired code, "Send a new code" starts again with the email the step holds.
+- Never put the proof or the continue nonce in an address, storage, analytics or a log. The page never sees the proof. The nonce reaches only the button's press handler, which posts it to the app at once.
 
 ## 8. Testing and fixtures
 

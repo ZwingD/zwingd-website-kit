@@ -45,6 +45,11 @@ Your **server** environment holds these. None of them may reach the browser, so 
 | `ZWINGD_SITE_ORIGIN` | This website's origin, exactly as listed, for example `https://www.example.org` |
 | `ZWINGD_INSECURE_LOCAL_COOKIES` | `true` for local development on `http://localhost` only. The kit refuses it when `NODE_ENV=production` |
 
+v0.2.0 also takes two settings in code (not environment names), both optional:
+
+- `buyerIpFrom(headers)`: how your server finds the buyer's IP for the code step. The default reads `x-real-ip`, else the last `x-forwarded-for` hop (both written by your own proxy; the first hop is whatever the browser sent), which is right on Vercel or behind one load balancer. Behind anything else, pass your own.
+- `visitorCountry(req)`: the visitor's country (a master-data country id) for the code step's quote, from your own source such as the host's geo header, never the request body. `createMemberCheckout` uses it too when you do not give it its own.
+
 The example site also reads `ZWINGD_COUNTRY_IDS`. That variable is the example's own way to price by the visitor's country (section 7), not a kit setting.
 
 ## 4. The routes the kit serves
@@ -56,6 +61,12 @@ The example site also reads `ZWINGD_COUNTRY_IDS`. That variable is the example's
 | `POST /session/end` | "Sign out". A same-site form POST only; the website and the app both sign out. The form's `next` (the page it was on) brings the member back there afterwards: see "Back to the page after sign-out" |
 | `GET /session/me` | Who is signed in, by name only, and where "Go to my account" opens, for pages that read the member in the browser (client mode) |
 | `POST /session/checkout` | Member checkout: the member's "Buy now" (section 7). Served when you pass a checkout to the routes |
+| `GET /session/code-step` | v0.2.0. The code step's form value (`formToken`, sent as `csrf`) and the open step a reload resumes (`pending`) |
+| `POST /session/code-start` | v0.2.0. Sends the buyer a code (`email`, `offer?`, `botToken?`). Same-site POST with `csrf` |
+| `POST /session/code-resend` | v0.2.0. A new code on the same ticket; once the ticket has expired, it starts again with the stored email (a new ticket). Same-site POST with `csrf` |
+| `POST /session/code-verify` | v0.2.0. Checks the code (`code`, `firstName?`, `lastName?`, `acceptedDocuments?` as JSON, and the purchase: `offer`, `expectedTotalMinor`, `expectedCurrencyCode`, `country?`, `couponCode?`, `paymentGateway?`, attribution). Keeps the proof server-side, re-quotes with it, and starts payment or answers the new price. Creates no account and no session. Same-site POST with `csrf` |
+| `POST /session/code-pay` | v0.2.0. "Pay {amount}" after the price changed: a start with the held proof at the shown total. Same-site POST with `csrf` |
+| `POST /session/checkout-continue` | v0.2.0. The thank-you button ("Continue sign-up" / "Go to my course"). Fetched by `CheckoutContinueButton` at the press: mints the one-time continue nonce and answers `{ nonce, continueUrl }` (or `400 { signInUrl }`). Same-site POST with `csrf` |
 
 ## 5. Next.js (App Router)
 
@@ -227,6 +238,60 @@ Before it navigates, `startMemberCheckout` stores one record in `sessionStorage`
 - `member: true` tells your return page this is a member's order, so it can skip the guest's "Log in with …" hint.
 - The return page confirms the payment and reads the order with `token`, exactly as for a guest. The token is never put in an address.
 
+## 7a. Verify the buyer's email before payment (v0.2.0)
+
+When the workspace's `websiteCheckoutStatus.verifyEmail` is `"before-payment"`, a signed-out buyer proves their email by code before paying. The guest checkout start is refused for such a workspace. A buyer already signed in on your website skips the step and uses member checkout (section 7).
+
+**The code step makes no account and no session.** A right code gives your server a short-lived verified-email proof, which the kit keeps in the HttpOnly `__Host-zw_proof` cookie. It never reaches page JavaScript or an address. Payment goes ahead against it. After payment the buyer continues into the app, which creates the account or signs the member in with the same proof, so nobody types a second code.
+
+```tsx
+"use client";
+import { CODE_STEP_COPY, CodeStepLiveRegion, fillCopy, useCodeStep } from "@zwingd-ce/website-kit-next/client";
+
+const step = useCodeStep({
+  offer,
+  expectedTotalMinor,                 // the guest total the page showed
+  expectedCurrencyCode,               // its currency, e.g. "USD"
+  country,                            // the master-data country id that total was priced in (optional)
+  storageKey: (id) => `mysite:checkout:order:${id}`,
+  terms,                              // [{ type, version }] when the workspace requires terms
+});
+<input {...step.emailInputProps} value={email} onChange={...} />
+step.sendCode(email, { botToken });   // email → sending → code; focus moves to the code input
+<input {...step.codeInputProps} />    // ONE input: "123 456" pastes as 123456; Tab leaves it
+<input {...step.termsInputProps} />   // "I agree to the {terms links}." when state.termsRequired
+step.verify();                        // → paying (straight to payment), or → confirm-price
+step.priceLine; step.payLabel;        // "Your member price is $79.00." / "Pay $79.00"
+step.pay();                           // the "Pay {amount}" press
+step.resend(); step.changeEmail();
+<CodeStepLiveRegion step={step} />    // the kit's polite live region; keep it mounted
+```
+
+- **Copy.** `CODE_STEP_COPY` is the signed copy (spec §8a), word for word. Restyle it; never reword it. `fillCopy(line, { email })` fills `{email}`, `{seconds}`, `{minutes}` and `{amount}`; draw your links to the legal documents where `{terms links}` is.
+- **Country.** Pass `country`, the master-data country id (24 hex, the same `_id` your guest quote and start take as `country`) that `expectedTotalMinor` was priced in, for example the one the buyer picked in your pop-up. The re-quote uses it, so a buyer who is not a member sees the same total and goes straight to payment. Without it the kit's `visitorCountry` setting (the geo header) is used. One of the two is required: with neither, the API refuses the start of a buyer who is not an active member (`HOSTED_GUEST_INVALID`, field `visitorCountry`), after the code has been spent. For a member the API still prices by the member's own profile country first (A2), so a member may see a changed total.
+- **After the code** the same request re-quotes with the proof. If the total is the one the page showed, the browser goes straight to payment ("Taking you to payment…"). If it changed (a member's price), the step shows "Your member price is {amount}." and a "Pay {amount}" button; nothing is charged until it is pressed. `already-owned` means the buyer has the course.
+- **Errors** are keyed by `reason`, and `state.error.field` names the input they belong to (`email`, `code`, `terms`, `payment`). The input props carry `aria-invalid` and `aria-describedby` with `step.ids`: draw the message with the matching id. A wrong or expired code stays on the step and focus goes back to the input; locked or rate-limited shows the wait; the resend cap shows its own line with the wait; terms required shows the tick box, focuses it and stays recoverable; an invalid email reads "Enter a valid email address."; anything else is the generic line.
+- **Expired code.** "Send a new code" on an expired ticket starts again with the email the step holds. No need to retype it.
+- **Live region.** `<CodeStepLiveRegion>` says the countdown once when it starts and once when "Send a new code" is ready (never every second), and "Taking you to payment…". The visible resend label ticks on its own and is not a live region.
+- **One verify per submit.** A send, resend, verify or pay in flight ignores another one, and `busy` is true while it runs.
+- **The order record.** Before the browser leaves for payment, the kit keeps `{ orderId, token, email: "", member: false, coursePath, expiresAt }` in `sessionStorage` under your `storageKey`, as member checkout does.
+- **Reload.** The open ticket lives in the HttpOnly `__Host-zw_ticket` cookie, so a reload after the mail app resumes the code step without a new code. The browser never sees the ticket.
+- **Drop-off.** With `offer`, the kit reports `code_sent` after a start. The start waits for it for at most 2 s, because a promise left running is dropped on serverless hosts. A failed report never fails the start. Identity records "verified" itself (B5).
+
+### The thank-you page
+
+On the return page's **server**, `await getCheckoutContinue(kit, { orderId })` (`@zwingd-ce/website-kit-next/server`) reads the proof context and answers the button for that order: `{ orderId, label: "Continue sign-up" | "Go to my course", action, continueAs, signInUrl }`, or `null` when this browser holds no proof that is still good, the proof did not start this order in this browser, or the context read fails (an API fault). Draw it with `<CheckoutContinueButton next={next} storageKey={...} />` (client; drawn only when this tab holds the order's record), or show your usual course link when it is `null`. Keep `continueAs` out of browser storage, addresses and logs.
+
+```tsx
+// app/checkout/return/[orderId]/page.tsx (Server Component)
+const next = await getCheckoutContinue(zwingd());
+return next ? <CheckoutContinueButton next={next} /> : <a href={courseUrl}>Go to my course</a>;
+```
+
+One press on your website. The button POSTs (same-site, with `csrf`) to the kit's `/session/checkout-continue`, which mints the 60-second, single-use continue nonce at that moment, never on the page load, and answers `{ nonce, continueUrl }`. The button then submits a hidden form POST carrying the nonce to the app's `/session/checkout-continue`. The nonce stays in that press handler and the form's body (the default submit removes the form once sent; a custom `submit` should too): never in state, storage, an address or a log. The proof itself never leaves your server. The app then shows "Continue as {email}" and waits for its own press before signing in, which stops login CSRF. If the continue cannot be made (no proof, an expired one, any fault), the press opens the app's normal sign-in (`signInUrl`). The button needs JavaScript: it reads the form value in the browser, because the `SameSite=Strict` cookie is not sent on the return from the payment page.
+
+- **A custom storefront** calls the same API routes from its own server: `POST /api/external/session-handover/code/start|resend|verify`, then `checkout/quote` and `checkout/start` with `checkoutProof` and `buyerIp` (never from a browser), and `checkout-proof/context` and `checkout-proof/continue` for the thank-you page, each with `realm`, `origin` and `Authorization: Bearer <secret>`.
+
 ## 8. What never to do
 
 - Never prefix a `ZWINGD_*` setting with `NEXT_PUBLIC_`, or send the client secret, the session token or the order token anywhere but where the kit sends them.
@@ -234,7 +299,9 @@ Before it navigates, `startMemberCheckout` stores one record in `sessionStorage`
 - Never take a return address from the browser. The kit always returns to `<origin>/checkout/return/<orderId>`.
 - Never send a price the page did not show. `expectedTotalMinor` is the member quote's `totalMinor`, unchanged.
 - Never start a hand-over on a page view. Only a click on "Log in" starts one.
-- Never show a sign-in form, or collect a password or a code, on your website.
+- Never show a sign-in form or collect a password on your website. The only code your website takes is the checkout code step (section 7a), through the kit's routes.
+- Never send the checkout proof to page JavaScript, an address, storage, analytics or a log: the kit keeps it in an HttpOnly cookie. The continue nonce reaches only the thank-you button's press handler, which puts it in the body of a form POST. Never store it, log it or put it in an address.
+- Never mint the continue nonce on a page load. Only the buyer's press on the thank-you button does.
 
 ## What the kit does for you
 
