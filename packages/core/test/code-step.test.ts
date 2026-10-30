@@ -40,7 +40,7 @@ test("CODE_STEP_COPY is the §8a copy, word for word", () => {
     hint: "Didn't get a code? Check your spam folder, or use a different email.",
     invalidEmail: "Enter a valid email address.",
     terms: "I agree to the {terms links}.",
-    termsRequired: "Accept the terms to continue.",
+    termsRequired: "Accept the terms to continue.", // Helm's #5 on zwingd-backend#1963
     goingToPayment: "Taking you to payment…",
     memberPrice: "Your member price is {amount}.",
     payButton: "Pay {amount}",

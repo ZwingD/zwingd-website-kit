@@ -51,7 +51,7 @@ export function CodeStep(props: {
           <a href={props.terms.url}>terms</a>
           {termsAfter}
         </label>
-        {error?.field === "terms" ? <span id={ids.termsError} hidden>{error.message}</span> : null}
+        {error?.field === "terms" ? <span id={ids.termsError} role="alert">{error.message}</span> : null}
       </p>
     ) : null;
 

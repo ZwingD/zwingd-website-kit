@@ -252,6 +252,39 @@ test("a wrong code stays on the step, the line is tied to the code input, focus 
   await unmount();
 });
 
+test("a wrong code is kept for the buyer to correct, and the next Continue sends the corrected one", async () => {
+  const server = fakeServer({ "code-verify": [{ status: 400, body: { reason: "WEBSITE_CODE_INVALID" } }, { status: 200, body: REDIRECT }] });
+  const { act, handle, unmount } = await mount(server);
+  await act(async () => { await handle.current!.sendCode("buyer@example.org"); });
+  await act(async () => { handle.current!.setCode("000000"); });
+  await act(async () => { await handle.current!.verify(); });
+  await settle(act);
+  assert.equal(handle.current!.state.error?.reason, "WEBSITE_CODE_INVALID");
+  assert.equal(handle.current!.code, "000000", "the wrong code stays");
+  await act(async () => { handle.current!.setCode("123456"); });
+  await act(async () => { await handle.current!.verify(); });
+  await settle(act);
+  const verifies = server.sent.filter((x) => x.path === "/session/code-verify");
+  assert.deepEqual(verifies.map((v) => v.form.code), ["000000", "123456"]);
+  await unmount();
+});
+
+test("a new code (Send a new code) clears the code typed for the old one, and focus goes back to the input", async () => {
+  const server = fakeServer({ "code-resend": { status: 200, body: TICKET } });
+  const clock = { now: NOW };
+  const { act, container, handle, unmount } = await mount(server, { clock });
+  await act(async () => { await handle.current!.sendCode("buyer@example.org"); });
+  await act(async () => { handle.current!.setCode("123456"); });
+  assert.equal(handle.current!.code, "123456");
+  clock.now = NOW + 43_000;
+  await settle(act, 1100);
+  await act(async () => { await handle.current!.resend(); });
+  await settle(act);
+  assert.equal(handle.current!.code, "", "the old code is cleared");
+  assert.equal((window.document.activeElement as unknown) === q(container, `#${handle.current!.ids.code}`), true);
+  await unmount();
+});
+
 test("an invalid email at start: 'Enter a valid email address.' tied to the email input", async () => {
   const server = fakeServer({ "code-start": { status: 400, body: { reason: "WEBSITE_CODE_EMAIL_INVALID" } } });
   const { act, container, handle, unmount } = await mount(server);

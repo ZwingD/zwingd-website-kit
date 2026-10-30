@@ -6,12 +6,13 @@
 
 Two fixes to the code step's terms box (seen on SCPMI's stage checkout, 2026-10-30). Not released yet: the `v*` tag needs the operator's go.
 
-- **Ticking the terms box no longer clears the code.** The hook cleared the code whenever the step's error went back to null while a code had been asked for, so ticking the box after "Continue" (which clears the terms error) wiped the six digits the buyer had typed. The code is now cleared only when a new code is asked for (the step opens, or a new code is sent).
+- **The example site shows the terms error.** `examples/next-site` drew it `hidden` (it repeated the box's sentence); it now shows the new line as an alert.
+- **Ticking the terms box no longer clears the code.** The hook cleared the code whenever the step's error went back to null while a code had been asked for, so ticking the box after "Continue" (which clears the terms error) wiped the six digits the buyer had typed. The code is now cleared only when a new code is asked for (the step opens, or a new code is sent). A second Continue after a wrong code no longer empties the input while it checks either; the wrong code stays for the buyer to correct.
 - **`WEBSITE_TERMS_REQUIRED` has its own line.** Continue without the box ticked said the box's own sentence ("I agree to the {terms links}.") as the error. It now says `CODE_STEP_COPY.termsRequired`, "Accept the terms to continue." (Helm's signed line for this refusal, #5 on #1963).
 
 ## 0.2.0
 
-Checkout v3.2: the buyer proves their email by code before payment (ZwingD/zwingd-backend#1963, spec v3.2). Needs the API's website code and proof routes (zwingd-backend#1984); a site that does not use them is unchanged. Not released yet: the `v*` tag needs the operator's go.
+Checkout v3.2: the buyer proves their email by code before payment (ZwingD/zwingd-backend#1963, spec v3.2). Needs the API's website code and proof routes (zwingd-backend#1984); a site that does not use them is unchanged.
 
 The code step creates **no account and no session**. A right code gives the site's server a short-lived verified-email proof, held in an HttpOnly cookie; payment goes ahead against it; after payment the buyer continues into the app with the same proof.
 
