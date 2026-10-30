@@ -252,6 +252,39 @@ test("a wrong code stays on the step, the line is tied to the code input, focus 
   await unmount();
 });
 
+test("a wrong code is kept for the buyer to correct, and the next Continue sends the corrected one", async () => {
+  const server = fakeServer({ "code-verify": [{ status: 400, body: { reason: "WEBSITE_CODE_INVALID" } }, { status: 200, body: REDIRECT }] });
+  const { act, handle, unmount } = await mount(server);
+  await act(async () => { await handle.current!.sendCode("buyer@example.org"); });
+  await act(async () => { handle.current!.setCode("000000"); });
+  await act(async () => { await handle.current!.verify(); });
+  await settle(act);
+  assert.equal(handle.current!.state.error?.reason, "WEBSITE_CODE_INVALID");
+  assert.equal(handle.current!.code, "000000", "the wrong code stays");
+  await act(async () => { handle.current!.setCode("123456"); });
+  await act(async () => { await handle.current!.verify(); });
+  await settle(act);
+  const verifies = server.sent.filter((x) => x.path === "/session/code-verify");
+  assert.deepEqual(verifies.map((v) => v.form.code), ["000000", "123456"]);
+  await unmount();
+});
+
+test("a new code (Send a new code) clears the code typed for the old one, and focus goes back to the input", async () => {
+  const server = fakeServer({ "code-resend": { status: 200, body: TICKET } });
+  const clock = { now: NOW };
+  const { act, container, handle, unmount } = await mount(server, { clock });
+  await act(async () => { await handle.current!.sendCode("buyer@example.org"); });
+  await act(async () => { handle.current!.setCode("123456"); });
+  assert.equal(handle.current!.code, "123456");
+  clock.now = NOW + 43_000;
+  await settle(act, 1100);
+  await act(async () => { await handle.current!.resend(); });
+  await settle(act);
+  assert.equal(handle.current!.code, "", "the old code is cleared");
+  assert.equal((window.document.activeElement as unknown) === q(container, `#${handle.current!.ids.code}`), true);
+  await unmount();
+});
+
 test("an invalid email at start: 'Enter a valid email address.' tied to the email input", async () => {
   const server = fakeServer({ "code-start": { status: 400, body: { reason: "WEBSITE_CODE_EMAIL_INVALID" } } });
   const { act, container, handle, unmount } = await mount(server);
@@ -280,12 +313,16 @@ test("terms: the tick box shows, Continue without it is recoverable (no call), t
   const box = q(container, `#${s.ids.terms}`);
   assert.equal(box.getAttribute("aria-invalid"), "true");
   assert.equal((window.document.activeElement as unknown) === box, true, "focus on the tick box");
+  assert.equal(s.state.error?.message, "Accept the terms to continue.");
   await act(async () => { handle.current!.setTermsAccepted(true); });
   assert.equal(handle.current!.state.error, null);
+  // Ticking the box clears its error, never the code the buyer typed.
+  assert.equal(handle.current!.code, "123456");
   await act(async () => { await handle.current!.verify(); });
   await settle(act);
   const v = server.sent.find((x) => x.path === "/session/code-verify")!;
   assert.equal(v.form.acceptedDocuments, JSON.stringify(TERMS));
+  assert.equal(v.form.code, "123456");
   await unmount();
 });
 

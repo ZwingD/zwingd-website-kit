@@ -63,6 +63,8 @@ export const CODE_STEP_COPY = Object.freeze({
   invalidEmail: "Enter a valid email address.",
   /** `{terms links}` is where the site draws its links to the workspace's legal documents. */
   terms: "I agree to the {terms links}.",
+  /** Helm's #5 on zwingd-backend#1963, WEBSITE_TERMS_REQUIRED: Continue without the box ticked. The error under the box, never the box's own words. */
+  termsRequired: "Accept the terms to continue.",
   goingToPayment: "Taking you to payment…",
   /** A2: the re-quote after verify changed the total (member price). */
   memberPrice: "Your member price is {amount}.",
@@ -130,7 +132,10 @@ export interface CodeStepState {
   /** True while a resend is in flight (the step stays `code`). */
   resending: boolean;
   error: CodeStepError | null;
-  /** Bumped whenever focus should go to the code input (the step opened; an invalid or expired code). */
+  /**
+   * Bumped whenever focus should go to the code input: the step opened or a new code was sent (`codeOpened`, the
+   * error null: the hook clears the typed code), or an invalid or expired code (the error set: the code is kept).
+   */
   focusCode: number;
   /** Bumped whenever focus should go to the terms tick box (terms required). */
   focusTerms: number;
@@ -262,7 +267,7 @@ export function codeStepError(refusal: CodeStepRefusal, during: "start" | "resen
     case "WEBSITE_CODE_RATE_LIMITED":
       return { ...base, field, message: fillCopy(CODE_STEP_COPY.locked, { minutes: minutesOf(retry) }) };
     case "WEBSITE_TERMS_REQUIRED":
-      return { ...base, field: "terms", message: CODE_STEP_COPY.terms };
+      return { ...base, field: "terms", message: CODE_STEP_COPY.termsRequired };
     case "COUNTRY_REQUIRED":
       return { ...base, field: "country", message: CODE_STEP_COPY.chooseCountry };
     case "WEBSITE_CODE_DISABLED":
