@@ -7,10 +7,22 @@
  *   const signOut = await signOutToken(kit);      // the sign-out form's csrf value
  *   const account = await accountUrl(kit);        // where "Go to my account" opens
  *   const next = await getCheckoutContinue(kit, { orderId });  // v0.2.0 thank-you button for this order, or null
+ *   const seat = await getMemberEvent(events, slug);   // the member's own seat and form
  */
 import { cookies } from "next/headers";
 
-import type { CheckoutContinue, MemberCheck, MemberCheckout, MemberContact, MemberQuoteCheck, WebsiteKit } from "@zwingd-ce/website-kit";
+import type {
+  CheckoutContinue,
+  MemberCheck,
+  MemberCheckout,
+  MemberContact,
+  MemberEventCheck,
+  MemberEventRegisterResult,
+  MemberEventRegistration,
+  MemberEvents,
+  MemberQuoteCheck,
+  WebsiteKit,
+} from "@zwingd-ce/website-kit";
 
 /** What a page may show: the member's name only. Never an email or phone (see `getCheckoutMember`). */
 export interface SiteMember {
@@ -78,6 +90,29 @@ export async function getMemberQuote(
   options: { visitorCountry?: string | null; couponCode?: string } = {}
 ): Promise<MemberQuoteCheck> {
   return checkout.getMemberQuote(await cookieMap(), offer, options);
+}
+
+/**
+ * Member events: the signed-in member's own seat on one event and the member
+ * form (only the questions their profile cannot answer). `ended` means the API
+ * said the session is over. One member's answer: serve it from a route handler
+ * with `Cache-Control: no-store` and `Vary: Cookie`, never in a cached page.
+ */
+export async function getMemberEvent(events: MemberEvents, slug: string): Promise<MemberEventCheck> {
+  return events.getMemberEvent(await cookieMap(), slug);
+}
+
+/**
+ * Member events: register the signed-in member, sending only what the member
+ * form asked (never a name or email). Never retried. `ended` means the API
+ * said the session is over: clear the cookie (`kit.clearSessionCookie()`).
+ */
+export async function registerMemberEvent(
+  events: MemberEvents,
+  slug: string,
+  registration?: MemberEventRegistration
+): Promise<MemberEventRegisterResult> {
+  return events.registerMemberEvent(await cookieMap(), slug, registration);
 }
 
 /**

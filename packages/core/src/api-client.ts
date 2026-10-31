@@ -507,3 +507,61 @@ export async function reportDropOff(
 ): Promise<void> {
   await post(config, "checkout/drop-off", { email: input.email, offer: input.offer, stage: input.stage }, timeoutMs);
 }
+
+// ---------------------------------------------------------------------------
+// Member events (B2 + B4): `events/read` and `events/register`
+// ---------------------------------------------------------------------------
+
+/**
+ * Why a member event call failed: `ended` (the session is over), `refused`
+ * (with the gateway's `reason` and, for a registration, the `fields` it
+ * names), `not_available` (404 with no contract body: an API without member
+ * events) or `unavailable` (busy, down, rate limited, a timeout, a malformed
+ * answer). Nothing else of the answer is kept.
+ */
+export type EventCallFailure = "ended" | "refused" | "not_available" | "unavailable";
+export type EventCallResult<T> = { ok: true; body: T } | { ok: false; error: EventCallFailure; reason?: string; fields?: string[] };
+
+const FIELD_KEY = /^[a-zA-Z][a-zA-Z0-9_]{0,39}$/;
+
+/**
+ * The gateway answers `{ status: 'ok' | 'ended' | 'refused' | 'unavailable', ... }`.
+ * A known `status` is read whatever the HTTP code; without one, the checkout
+ * routes' error words are read the same way (`login_required` is ended, a 404 is
+ * not-available, anything else unavailable).
+ */
+function eventCall(res: PostResult): EventCallResult<Record<string, unknown>> {
+  const raw = (res.ok ? res.body : res.raw) as Record<string, unknown> | null | undefined;
+  const status = raw && typeof raw === "object" ? raw.status : undefined;
+  if (status === "ok") return res.ok ? { ok: true, body: raw as Record<string, unknown> } : { ok: false, error: "unavailable" };
+  if (status === "ended") return { ok: false, error: "ended" };
+  if (status === "refused") {
+    const reason = typeof raw!.reason === "string" && REASON.test(raw!.reason) ? raw!.reason : undefined;
+    const fields = Array.isArray(raw!.fields) ? raw!.fields.filter((f): f is string => typeof f === "string" && FIELD_KEY.test(f)) : undefined;
+    return { ok: false, error: "refused", ...(reason ? { reason } : {}), ...(fields && fields.length > 0 ? { fields } : {}) };
+  }
+  if (status === "unavailable" || res.ok) return { ok: false, error: "unavailable" };
+  if ((raw as { error?: unknown } | null | undefined)?.error === "login_required") return { ok: false, error: "ended" };
+  if (res.status === 404) return { ok: false, error: "not_available" };
+  return { ok: false, error: "unavailable" };
+}
+
+/** `events/read`. Never throws and is never retried. */
+export async function eventsRead(
+  config: WebsiteKitConfig,
+  sessionToken: string,
+  slug: string,
+  timeoutMs: number
+): Promise<EventCallResult<Record<string, unknown>>> {
+  return eventCall(await post(config, "events/read", { sessionToken, slug }, timeoutMs));
+}
+
+/** `events/register`. Never throws and is NEVER retried here: it takes a seat. */
+export async function eventsRegister(
+  config: WebsiteKitConfig,
+  sessionToken: string,
+  input: Record<string, unknown> & { slug: string },
+  timeoutMs: number
+): Promise<EventCallResult<Record<string, unknown>>> {
+  return eventCall(await post(config, "events/register", { sessionToken, ...input }, timeoutMs));
+}

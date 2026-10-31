@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.2.2
+
+Member events on top of 0.2.1 (was the unreleased 0.1.4). Not released yet: the `v*` tag needs the operator's go.
+
+- Member events (B2 + B4): a member signed in on the website sees their own seat on an event and registers without typing a name or email. `createMemberEvents(kit)` gives `getMemberEvent(cookies, slug)` and `registerMemberEvent(cookies, slug, registration?)`, on the site's server, calling the gateway's `POST /api/external/session-handover/events/read` and `/events/register` with the client secret and the session cookie's token, as member checkout does. Next.js: `getMemberEvent(events, slug)` and `registerMemberEvent(events, slug, registration?)` from `@zwingd-ce/website-kit-next/server`.
+  - Results: `ok` (the event's `viewerStatus` `REGISTERED` / `WAITLISTED` / null, `ended`, and the member `form` with each question's `viewerPrefill`; or the `seat` taken), `signed-out` (no cookie; the API is not asked), `ended` (the session is over: clear the cookie), `refused` (with `reason`, and `fields` for a registration), `not-available` (an API without member events), `unavailable` (busy, down, a 429, a timeout, a malformed answer) and `invalid-request` (a malformed slug or registration; the API is not asked).
+  - Only the contract's fields go to the API and come back from it. A registration is never retried. 10 s for a read, 15 s for a registration.
+  - Needs the gateway routes (zwingd-backend `feat/29oct26-website-member-events`); against an API without them every call is `not-available`.
+
 ## 0.2.1
 
 Two fixes to the code step's terms box (seen on SCPMI's stage checkout, 2026-10-30). Not released yet: the `v*` tag needs the operator's go.
